@@ -10,8 +10,9 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 cat >"$work/bin/omarchy-hw-platform" <<'STUB'
 #!/bin/bash
-echo apple-silicon
+echo aarch64-apple
 STUB
+stub_apple_predicate "$work/bin"
 printf '#!/bin/bash\necho "Broadcom Bluetooth [14e4:5f69]"\n' >"$work/bin/lspci"
 chmod +x "$work/bin/"*
 stage=$work/root

@@ -6,14 +6,15 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 cat >"$work/bin/omarchy-hw-platform" <<'STUB'
 #!/bin/bash
-[[ ${PLATFORM:-apple-silicon} != "error" ]] || exit 1
-echo "${PLATFORM:-apple-silicon}"
+[[ ${PLATFORM:-aarch64-apple} != "error" ]] || exit 1
+echo "${PLATFORM:-aarch64-apple}"
 STUB
 cat >"$work/bin/lspci" <<'STUB'
 #!/bin/bash
 [[ ${PCI_ERROR:-0} != "1" ]] || exit 1
 echo "01:00.1 Broadcom Bluetooth [14e4:${BLUETOOTH_ID:-5f69}]"
 STUB
+stub_apple_predicate "$work/bin"
 chmod +x "$work/bin/"*
 root=$work/root
 "$ROOT/install" "$root"
@@ -168,7 +169,7 @@ run_recovery() {
   RADIO_STATE=${RADIO_STATE-unblocked} RADIO_SWITCH=${RADIO_SWITCH:-0} \
     RFKILL_FAILS=${RFKILL_FAILS:-0} JOURNAL_FAILS=${JOURNAL_FAILS:-0} \
     STATS_AT=${STATS_AT:-} SLEEP_REAL=${REBIND_FIFO:-0} \
-    PLATFORM=${PLATFORM:-apple-silicon} BLUETOOTH_ID=${BLUETOOTH_ID:-5f69} PCI_ERROR=${PCI_ERROR:-0} \
+    PLATFORM=${PLATFORM:-aarch64-apple} BLUETOOTH_ID=${BLUETOOTH_ID:-5f69} PCI_ERROR=${PCI_ERROR:-0} \
     PATH="$work/bin:$PATH" OMARCHY_BLUETOOTH_DRIVER_DIR=$driver OMARCHY_BLUETOOTH_CLASS_DIR=$controllers \
     OMARCHY_SUSPEND_STATS_DIR=$stats "$work/recover" >"$work/output" 2>&1 || status=$?
   if [[ -n $reader ]]; then
@@ -290,7 +291,7 @@ if BIND_FAILS=1 run_recovery; then fail 'a bind failure exits nonzero'; fi
 grep -Fq 'Failed to bind' "$work/output" || fail 'a bind failure is diagnosed'
 pass 'unbind and bind failures are observable'
 
-for spec in 'generic 5f69' 'generic-aarch64 5f71' 'qualcomm 5f69' 'apple-silicon 0000'; do
+for spec in 'generic 5f69' 'generic-aarch64 5f71' 'qualcomm 5f69' 'aarch64-apple 0000'; do
   read -r PLATFORM BLUETOOTH_ID <<<"$spec"
   wedged_resume
   PLATFORM=$PLATFORM BLUETOOTH_ID=$BLUETOOTH_ID run_recovery
