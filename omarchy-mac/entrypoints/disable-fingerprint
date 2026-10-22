@@ -1,11 +1,11 @@
 #!/bin/bash
 # omarchy-lifecycle-dispatch disable-fingerprint: Omarchy's fingerprint removal
 # runs this as root once the fingerprints are deleted. Removing the owner's
-# agreement stops the driver loading at boot; the key store stays.
+# agreement stops the driver loading, and writing, at boot; the key store stays.
 omarchy-hw-apple-silicon || exit 0
 
-if [[ -e /etc/omarchy-mac/touchid-on ]]; then
-  rm -f /etc/omarchy-mac/touchid-on
+if [[ -e /etc/omarchy-mac/touchid-on || -e /etc/modprobe.d/omarchy-mac-touchid.conf ]]; then
+  rm -f /etc/omarchy-mac/touchid-on /etc/modprobe.d/omarchy-mac-touchid.conf
   echo "Touch ID stops loading at the next boot. The key store for Linux stays on this Mac."
 fi
 exit 0

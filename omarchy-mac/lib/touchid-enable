@@ -7,7 +7,12 @@ tree=${OMARCHY_MAC_TOUCHID_TREE:-/proc/device-tree}
 firmware=${OMARCHY_MAC_TOUCHID_FIRMWARE:-/usr/lib/firmware}
 extractors=${OMARCHY_MAC_TOUCHID_EXTRACTORS:-/usr/lib/linux-aurora}
 agreed=${OMARCHY_MAC_TOUCHID_AGREED:-/etc/omarchy-mac/touchid-on}
+options=${OMARCHY_MAC_TOUCHID_OPTIONS:-/etc/modprobe.d/omarchy-mac-touchid.conf}
+module=${OMARCHY_MAC_TOUCHID_MODULE:-/sys/module/apple_sep}
 status_file=${OMARCHY_MAC_TOUCHID_STATUS:-/run/omarchy-mac/touchid}
+# Set once this script has loaded the driver this boot, so a retry after a
+# failure doesn't take that driver for one loaded without the options.
+loaded=${status_file%/*}/touchid-loaded
 helpers=${OMARCHY_MAC_TOUCHID_HELPERS:-/usr/lib/omarchy-mac}
 node_path=${OMARCHY_MAC_TOUCHID_NODE:-/dev/sep-bio}
 keybag=${OMARCHY_MAC_TOUCHID_KEYBAG:-/var/lib/aurora-sep-keybag.bin}
@@ -19,7 +24,7 @@ omarchy-hw-apple-silicon || exit 0
 recorded=0
 fail() {
   if (( recorded )); then
-    rm -f "$agreed"
+    rm -f "$agreed" "$options"
   fi
   echo "Touch ID was not turned on: $1" >&2
   exit 1
@@ -65,6 +70,20 @@ mkdir -p -m 0755 "${agreed%/*}"
 [[ -e $agreed ]] || recorded=1
 printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." >"$agreed"
 chmod 0644 "$agreed"
+# The driver's options say so too. Today's kernels write by default, so this
+# changes nothing yet; a kernel that loads apple_sep read-only by default
+# (omacom/linux-aurora#180) writes only with it. A driver already running
+# keeps the options it was loaded with until the next boot.
+preloaded=0
+if [[ -d $module && ! -e $options && ! -e $loaded ]]; then
+  preloaded=1
+fi
+mkdir -p -m 0755 "${options%/*}"
+printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." \
+  "options apple_sep xart_writes=1 provision_keybag=1" >"$options"
+chmod 0644 "$options"
+mkdir -p -m 0755 "${loaded%/*}"
+touch "$loaded"
 modprobe apple-sep || fail "the Secure Enclave driver did not load"
 
 # The node and keybag appear a few seconds after the driver binds. Their add
@@ -82,6 +101,11 @@ if [[ $(cat "$status_file" 2>/dev/null) == "ready" ]]; then
   # allowance for its node, so it starts again with both.
   systemctl try-restart fprintd.service 2>/dev/null
   echo "Touch ID is on."
+elif (( preloaded )); then
+  # It was loaded before it could be told to write, so the agreement stands and
+  # takes effect when it loads again.
+  echo "Touch ID turns on when this Mac restarts: its driver was already running without permission to write. Restart, then set up the fingerprint again." >&2
+  exit 1
 else
   fail "it did not become ready ($(cat "$status_file" 2>/dev/null || echo unknown)); see journalctl -u omarchy-mac-touchid-activate. The driver stays loaded until this Mac restarts; restart before trying again"
 fi

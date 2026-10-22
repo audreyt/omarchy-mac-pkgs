@@ -6,6 +6,14 @@ omarchy-hw-apple-silicon || exit 0
 
 status=$(cat /run/omarchy-mac/touchid 2>/dev/null)
 if [[ -e /etc/omarchy-mac/touchid-on && $status == "ready" ]]; then
+  # A Mac turned on before the record came with driver options gets them now.
+  options=/etc/modprobe.d/omarchy-mac-touchid.conf
+  if [[ ! -e $options ]]; then
+    mkdir -p -m 0755 "${options%/*}"
+    printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." \
+      "options apple_sep xart_writes=1 provision_keybag=1" >"$options"
+    chmod 0644 "$options"
+  fi
   exit 0
 elif [[ $status != "available" && $status != "ready" ]]; then
   echo "Touch ID can't be set up on this Mac yet (${status:-not detected})." >&2

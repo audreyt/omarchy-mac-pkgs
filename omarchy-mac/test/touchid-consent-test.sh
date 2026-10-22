@@ -32,8 +32,10 @@ fixture=$work/fixture
 tree=$fixture/tree
 mkdir -p "$fixture/bin" "$fixture/extractors"
 printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/omarchy-hw-apple-silicon"
-printf '#!/bin/sh\necho modprobe "$@" >>"%s"\n[ -e "%s" ] && exit 1\ntouch "%s" "%s"\n' \
-  "$fixture/calls" "$fixture/modprobe-fails" "$fixture/sep-bio" "$fixture/keybag" >"$fixture/bin/modprobe"
+# The stub keeps the driver options it was loaded with, as modprobe reads them.
+printf '#!/bin/sh\necho modprobe "$@" >>"%s"\ncp "%s" "%s" 2>/dev/null\n[ -e "%s" ] && exit 1\nmkdir -p "%s"\ntouch "%s" "%s"\n' \
+  "$fixture/calls" "$fixture/etc/modprobe.conf" "$fixture/options-at-load" "$fixture/modprobe-fails" \
+  "$fixture/module" "$fixture/sep-bio" "$fixture/keybag" >"$fixture/bin/modprobe"
 printf '#!/bin/sh\necho systemctl "$@" >>"%s"\n[ "$1" = start ] && printf "%%s\\n" "$(cat "%s")" >"%s"\nexit 0\n' \
   "$fixture/calls" "$fixture/activation" "$fixture/run/touchid" >"$fixture/bin/systemctl"
 printf '#!/bin/sh\n[ -e "%s" ] || echo /usr/lib/omarchy/mac/enable-fingerprint\n' "$fixture/no-hook" >"$fixture/bin/omarchy-lifecycle-dispatch"
@@ -44,7 +46,7 @@ chmod +x "$fixture/bin/"* "$fixture/extractors/"*
 
 # A device tree: the machine's compatible list, a sensor node, and the identity.
 machine() {
-  rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook"
+  rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook" "$fixture/options-at-load" "$fixture/module"
   mkdir -p "$tree/soc/spi@39b108000/fingerprint@0" "$tree/chosen" "$fixture/firmware" "$fixture/run"
   printf '%s\0' "$@" >"$tree/compatible"
   printf 'apple,mesa-fingerprint\0' >"$tree/soc/spi@39b108000/fingerprint@0/compatible"
@@ -61,6 +63,7 @@ neo() {
 run() {
   PATH="$fixture/bin:$PATH" OMARCHY_MAC_TOUCHID_TREE=$tree OMARCHY_MAC_TOUCHID_FIRMWARE=$fixture/firmware \
     OMARCHY_MAC_TOUCHID_EXTRACTORS=$fixture/extractors OMARCHY_MAC_TOUCHID_AGREED=$fixture/etc/touchid-on \
+    OMARCHY_MAC_TOUCHID_OPTIONS=$fixture/etc/modprobe.conf OMARCHY_MAC_TOUCHID_MODULE=$fixture/module \
     OMARCHY_MAC_TOUCHID_STATUS=$fixture/run/touchid OMARCHY_MAC_TOUCHID_HELPERS=$ROOT/lib \
     OMARCHY_MAC_TOUCHID_NODE=$fixture/sep-bio OMARCHY_MAC_TOUCHID_KEYBAG=$fixture/keybag \
     OMARCHY_MAC_TOUCHID_PYTHON=${python:-sh} "$ROOT/lib/$1" "${@:2}"
@@ -134,6 +137,9 @@ out=$(run touchid-enable 2>&1) || fail 'an available Mac whose activation reads 
 [[ $(<"$fixture/firmware/updates/apple/mesa_calibration.bin") == "calibration" ]] ||
   fail 'the calibration is carved into the updates firmware directory under the default name'
 [[ -f $fixture/etc/touchid-on && $(stat -c %a "$fixture/etc/touchid-on") == 644 ]] || fail "the owner's agreement is recorded"
+grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1' "$fixture/options-at-load" &&
+  [[ $(stat -c %a "$fixture/etc/modprobe.conf") == 644 ]] ||
+  fail "the driver is loaded with the options that let it write, which a read-only default needs"
 [[ $(<"$fixture/calls") == $'calibration\nmodprobe apple-sep\nsystemctl start omarchy-mac-touchid-activate.service\nsystemctl try-restart fprintd.service' ]] ||
   fail 'it carves, loads the driver, waits for the activation, then restarts a running fprintd' "$(<"$fixture/calls")"
 [[ $out == *"Touch ID is on."* ]] || fail 'it says so' "$out"
@@ -145,8 +151,12 @@ machine apple,j414c apple,t6021 apple,arm-platform
 echo not-ready >"$fixture/activation"
 ! out=$(run touchid-enable 2>&1) && [[ $out == *"did not become ready (not-ready)"* ]] && ! grep -q try-restart "$fixture/calls" ||
   fail 'an activation that does not reach ready fails, says what it read, and leaves fprintd alone' "$out"
-[[ ! -e $fixture/etc/touchid-on && $out == *"restart before trying again"* ]] ||
+[[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf && $out == *"restart before trying again"* ]] ||
   fail 'a Touch ID that never became ready takes the agreement back, so it does not load at every boot' "$out"
+# A retry in the same boot after an ordinary failure: the driver this script
+# loaded is not one loaded without the options.
+! out=$(run touchid-enable 2>&1) && [[ -d $fixture/module && ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf ]] ||
+  fail 'a retry after a failure in the same boot takes the agreement back again' "$out; $(ls -a "$fixture/etc" "$fixture/run" "$fixture/module" 2>&1 | tr '\n' ' ')"
 echo ready >"$fixture/activation"
 machine apple,j414c apple,t6021 apple,arm-platform
 printf '#!/bin/sh\nexit 1\n' >"$fixture/extractors/extract-mesa-calibration"
@@ -170,6 +180,24 @@ touch "$fixture/modprobe-fails"
   ! grep -q 'systemctl start' "$fixture/calls" ||
   fail 'a driver that does not load takes the agreement back and starts nothing' "$out"
 rm "$fixture/modprobe-fails"
+# A driver already running, as a kernel that loads it read-only on every Mac
+# leaves it, can't be told to write until it loads again: the agreement stands.
+machine apple,j414c apple,t6021 apple,arm-platform
+mkdir -p "$fixture/module"
+echo not-ready >"$fixture/activation"
+! out=$(run touchid-enable 2>&1) && [[ -e $fixture/etc/touchid-on && -e $fixture/etc/modprobe.conf && $out == *"turns on when this Mac restarts"* ]] ||
+  fail 'a driver loaded before it could write keeps the agreement for the next boot' "$out"
+machine apple,j414c apple,t6021 apple,arm-platform
+mkdir -p "$fixture/module"
+echo ready >"$fixture/activation"
+run touchid-enable >/dev/null 2>&1 || fail 'a driver already running that writes by default turns on now'
+machine apple,j414c apple,t6021 apple,arm-platform
+mkdir -p "$fixture/module" "$fixture/etc"
+touch "$fixture/etc/modprobe.conf"
+echo not-ready >"$fixture/activation"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"did not become ready (not-ready)"* && $out != *"turns on when this Mac restarts"* ]] ||
+  fail 'a driver loaded with the options already in place that still fails says so, not that a restart will fix it' "$out"
+echo ready >"$fixture/activation"
 machine apple,j314s apple,t6000 apple,arm-platform
 ! run touchid-enable >/dev/null 2>&1 && [[ ! -e $fixture/etc/touchid-on ]] || fail 'an unsupported Mac is never turned on'
 pass 'turning Touch ID on carves what is missing, records the agreement, and succeeds only when it is ready'
@@ -180,6 +208,7 @@ mkdir -p "$entry"
 for name in enable-fingerprint disable-fingerprint; do
   sed -e "s|/run/omarchy-mac/touchid|$fixture/run/touchid|g" -e "s|/var/lib/aurora-sep-keybag.bin|$fixture/keybag|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-enable|$fixture/bin/enable-stub|g" -e "s|/etc/omarchy-mac/touchid-on|$fixture/etc/touchid-on|g" \
+    -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" \
     -e "s|/proc/device-tree/compatible|$tree/compatible|g" "$ROOT/entrypoints/$name" >"$entry/$name"
   chmod +x "$entry/$name"
 done
@@ -214,13 +243,15 @@ machine apple,j414c apple,t6021 apple,arm-platform
 mkdir -p "$fixture/etc"
 touch "$fixture/etc/touchid-on"
 ask ready '' && [[ ! -s $fixture/calls && ! -s $fixture/out ]] || fail 'a Touch ID the owner already turned on asks nothing'
+grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1' "$fixture/etc/modprobe.conf" ||
+  fail 'a Touch ID turned on before the driver options existed gets them'
 rm "$fixture/etc/touchid-on"
 ! ask ready n && grep -q 'With FileVault on' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
   fail 'a Touch ID turned off earlier this boot asks again before turning back on'
 ! ask unsupported:board '' && grep -q 'unsupported:board' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
   fail 'an unsupported Mac is told why, and nothing turns on'
-touch "$fixture/etc/touchid-on"
-PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && [[ ! -e $fixture/etc/touchid-on ]] &&
+touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
+PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf ]] &&
   grep -q 'key store for Linux stays' "$fixture/out" || fail "turning it off removes the owner's agreement and says the key store stays"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 || fail 'turning it off twice is fine'
 touch "$fixture/keybag"
