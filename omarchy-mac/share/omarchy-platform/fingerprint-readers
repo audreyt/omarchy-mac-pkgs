@@ -1,3 +1,4 @@
-# Touch ID: the Secure Enclave driver reads "ready" here once its sensor is
-# bound and can enroll and match (omarchy's docs/file-layout.md).
-/sys/bus/platform/drivers/apple_sep/*/diag/touchid ready
+# Touch ID: omarchy-mac-touchid-activate.service writes "ready" here once the
+# Secure Enclave driver says the sensor can enrol and match (touchid, sensor_attach,
+# restore and matching), and the reason otherwise (omarchy's docs/file-layout.md).
+/run/omarchy-mac/touchid ready

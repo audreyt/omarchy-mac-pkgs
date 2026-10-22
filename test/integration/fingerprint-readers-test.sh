@@ -4,36 +4,57 @@ set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime-test.sh"
 
-# omarchy-mac names Touch ID in the platform root (fingerprint-readers), and
-# the runtime's omarchy-hw-fingerprint must find it there: a copy of the
-# command reads the staged package, its sysfs path moved under a fixture.
+# omarchy-mac names Touch ID in the platform root (fingerprint-readers) by the
+# status its activation records, and the runtime's omarchy-hw-fingerprint must
+# find it there: the staged script writes the status from a fixture sysfs.
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 "$MAC/install" "$tmp/pkg" >/dev/null
-mkdir -p "$tmp/platform" "$tmp/bin" "$tmp/usb"
-sed "s|^/sys/|$tmp/sys/|" "$tmp/pkg/usr/share/omarchy-platform/fingerprint-readers" >"$tmp/platform/fingerprint-readers"
-grep -q "^$tmp/sys/" "$tmp/platform/fingerprint-readers" || fail "the staged file names a sysfs reader"
+mkdir -p "$tmp/platform" "$tmp/bin" "$tmp/usb" "$tmp/stub"
+sed "s|^/run/|$tmp/run/|" "$tmp/pkg/usr/share/omarchy-platform/fingerprint-readers" >"$tmp/platform/fingerprint-readers"
+grep -q "^$tmp/run/omarchy-mac/touchid ready$" "$tmp/platform/fingerprint-readers" ||
+  fail "the staged file names the status the activation records"
 platform_root_copy "$ROOT/bin/omarchy-hw-fingerprint" "$tmp/bin/omarchy-hw-fingerprint" "$tmp/platform"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/stub/sleep"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/stub/omarchy-hw-apple-silicon"
+chmod +x "$tmp/stub/sleep" "$tmp/stub/omarchy-hw-apple-silicon"
+touch "$tmp/sep-bio"
 
+# touchid, sensor_attach, restore and matching, as the Secure Enclave driver
+# reports them on a fresh boot, so no earlier status carries over.
 touch_id() {
-  mkdir -p "$tmp/sys/bus/platform/drivers/apple_sep/396400000.sep/diag"
-  printf '%s\n' "$1" >"$tmp/sys/bus/platform/drivers/apple_sep/396400000.sep/diag/touchid"
+  local diag=$tmp/sys/apple_sep/396400000.sep/diag
+  mkdir -p "$diag"
+  rm -rf "$tmp/run"
+  printf '%s\n' "$1" >"$diag/touchid"
+  printf '%s\n' "$2" >"$diag/sensor_attach"
+  printf '%s\n' "$3" >"$diag/restore"
+  printf '%s\n' "$4" >"$diag/matching"
+  PATH="$tmp/stub:$PATH" OMARCHY_MAC_TOUCHID_NODE=$tmp/sep-bio OMARCHY_MAC_TOUCHID_DRIVER=$tmp/sys/apple_sep \
+    OMARCHY_MAC_TOUCHID_STATUS=$tmp/run/omarchy-mac/touchid OMARCHY_MAC_TOUCHID_ATTEMPTS=1 \
+    "$tmp/pkg/usr/lib/omarchy-mac/touchid-activate" 2>/dev/null || true
 }
 detects() {
   OMARCHY_USB_DEVICES_PATH="$tmp/usb" "$tmp/bin/omarchy-hw-fingerprint"
 }
 
-detects && fail "a Mac whose kernel has no Secure Enclave driver has no reader"
-touch_id unknown
-detects && fail "a Mac whose sensor is not bound has no reader"
-touch_id ready
-detects || fail "a Mac whose Secure Enclave reports Touch ID ready has a reader"
-pass "the runtime finds Touch ID where omarchy-mac names it, only once it is ready"
+detects && fail "a Mac whose Touch ID was never activated has no reader"
+touch_id ready attached restored usable
+detects || fail "a Mac whose Touch ID can enrol and match has a reader"
+touch_id ready attached empty unverified
+detects || fail "a Mac with nothing enrolled yet, behind a guard that has refused nothing, has a reader"
+pass "the runtime finds Touch ID where omarchy-mac names it, once it can enrol and match"
+
+touch_id ready not-ready unknown usable
+detects && fail "a sensor that never came online is no reader"
+touch_id ready attached unproven usable
+detects && fail "fingerprints whose restore is unproven are no reader"
+touch_id ready attached restored blocked
+detects && fail "a Mac whose matches cannot save their state is no reader"
+pass "a Touch ID that reads ready but cannot enrol or match is no reader"
 
 # A Touch ID that isn't ready never hides a USB reader beside it.
-touch_id not-ready
-detects && fail "a Touch ID that is not ready is no reader"
 mkdir -p "$tmp/usb/1-0"
 printf '27c6\n' >"$tmp/usb/1-0/idVendor"
 printf '1234\n' >"$tmp/usb/1-0/idProduct"
