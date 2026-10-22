@@ -591,8 +591,9 @@ with tempfile.TemporaryDirectory() as temporary:
     # The watcher sleeps on pactl events instead of polling: device events wake
     # it once they settle, application and stream events never do, a steady
     # stream cannot starve repair, and a lost subscription still yields one.
-    def feed(script):
-        return m.Subscription(command=['bash', '-c', script], quiet=0.1, settle=1.0, backstop=0.6, retry=0.05)
+    def feed(script, command=None, **options):
+        sub = m.Subscription(command=command or ['bash', '-c', script], **dict(dict(quiet=0.1, settle=1.0, backstop=0.6, retry=0.05), **options))
+        sub.start(); sub.last_full = time.monotonic(); return sub
     def timed(sub):
         start = time.monotonic(); sub.wait(); elapsed = time.monotonic() - start; sub.stop(); return elapsed
     elapsed = timed(feed("echo \"Event 'new' on source #7\"; sleep 3"))
@@ -629,13 +630,137 @@ with tempfile.TemporaryDirectory() as temporary:
     try: m.supervise(saving, wait=lambda: next(answers))
     except KeyboardInterrupt: pass
     assert saves == [False, True, False], saves
-    elapsed = timed(feed("for i in $(seq 20); do echo \"Event 'new' on sink #1\"; sleep 0.05; done; sleep 3"))
+    # Events keep coming well inside the quiet interval for three times the
+    # settle cap, so only the cap ends the wait, however slow the machine's
+    # timers. The cap counts from the first event, so timing starts at one.
+    emitter = ("import time\n"
+               "for _ in range(60):\n"
+               "    print(\"Event 'new' on sink #1\", flush=True); time.sleep(0.05)\n"
+               "time.sleep(3)\n")
+    steady = feed(None, command=[sys.executable, '-u', '-c', emitter], quiet=0.5)
+    m.select.select([steady.process.stdout], [], [], 10); steady.last_full = time.monotonic()
+    elapsed = timed(steady)
     assert 0.9 <= elapsed < 1.5, ('a steady event stream must repair at the settle cap', elapsed)
     sub = feed("sleep 3"); start = time.monotonic(); sub.wait(0.2); elapsed = time.monotonic() - start; sub.stop()
     assert 0.2 <= elapsed < 0.5, ('a pending lost-array notice shortens the wait', elapsed)
     sub = feed('exit 0'); elapsed = timed(sub)
     assert elapsed < 0.5 and sub.process is None, 'a lost subscription must yield a repair and resubscribe later'
     assert timed(m.Subscription(command=['/nonexistent/pactl'], retry=0.05)) < 0.5, 'a missing subscriber must degrade to a paced retry'
+    # A device that appears while nothing listens (the DSP at login, or after
+    # pipewire-pulse restarts) is mapped: the supervisor subscribes before its
+    # first pass, and every resubscription is followed by a pass at once.
+    sub = m.Subscription(command=['bash', '-c', "sleep 3; echo \"Event 'new' on source #7\""], backstop=60.0, retry=0.05)
+    start = time.monotonic(); result = sub.wait(); elapsed = time.monotonic() - start
+    assert result is False and elapsed < 0.5 and sub.process is not None, ('a new subscription is followed by a pass', result, elapsed)
+    sub.stop()
+    order = []
+    class Recorded:
+        def __init__(self, **options): order.append(('subscription', options.get('stale')))
+        def start(self): order.append('subscribe'); return True
+        def wait(self, limit=None): raise KeyboardInterrupt()
+        def stop(self): order.append('stop')
+    with mock.patch.object(m, 'Subscription', Recorded):
+        try: m.supervise(lambda save=False: order.append('pass'))
+        except KeyboardInterrupt: pass
+    assert order == [('subscription', None), 'subscribe', 'pass', 'stop'], order
+    # A replaced program is noticed while events keep arriving, and only then.
+    looks = []
+    def stale():
+        looks.append(time.monotonic()); return len(looks) >= 2
+    sub = feed("while true; do echo \"Event 'change' on source #5\"; sleep 0.05; done", backstop=60.0, stale=stale, poll=0.2)
+    m.mapping_index['value'] = '5'
+    results = []; start = time.monotonic()
+    while time.monotonic() - start < 2:
+        results.append(sub.wait())
+        if results[-1] == m.RELOAD: break
+    sub.stop(); m.mapping_index['value'] = None
+    assert results[-1] == m.RELOAD and len(looks) == 2 and time.monotonic() - start < 1.5, (results, looks)
+    sub = feed('sleep 3', backstop=0.5, stale=lambda: False, poll=0.1)
+    assert sub.wait() is False, 'an unchanged program never stops the wait'
+    sub.stop()
+    # The poll runs across waits: events that end each wait sooner than the
+    # poll interval never postpone it, nor does a subscriber that keeps dying.
+    looks = []
+    sub = feed("while true; do echo \"Event 'new' on sink #1\"; sleep 0.3; done", quiet=0.05, settle=0.1, backstop=60.0, stale=stale, poll=0.5)
+    results = []; start = time.monotonic()
+    while time.monotonic() - start < 3:
+        results.append(sub.wait())
+        if results[-1] == m.RELOAD: break
+    sub.stop()
+    assert results[-1] == m.RELOAD and False in results and time.monotonic() - start < 2.0, (results, looks)
+    looks = []
+    sub = m.Subscription(command=['bash', '-c', 'exit 0'], retry=0.05, stale=stale, poll=0.3)
+    results = []; start = time.monotonic()
+    while time.monotonic() - start < 3:
+        results.append(sub.wait())
+        if results[-1] == m.RELOAD: break
+    sub.stop()
+    assert results[-1] == m.RELOAD and time.monotonic() - start < 2.0, (results, looks)
+    # A moment after subscribing the watcher looks once more, for a device
+    # that appeared before pactl had registered its subscription.
+    sub = feed('sleep 5', backstop=60.0)
+    start = time.monotonic(); result = sub.wait(); elapsed = time.monotonic() - start
+    assert result is False and 0.8 <= elapsed < 1.5, ('a pass follows a moment after subscribing', elapsed)
+    start = time.monotonic(); sub.wait(0.3); assert time.monotonic() - start >= 0.3, 'only once'
+    sub.stop()
+    # On RELOAD the supervisor stops its subscriber and runs the new program;
+    # if that cannot run, the old code carries on with a full pass.
+    events = []
+    class Replaced:
+        def replaced(self): return False
+        def run(self): events.append('run')
+    class Watched:
+        def __init__(self, **options): pass
+        def start(self): return True
+        def wait(self, limit=None):
+            if len(events) > 3: raise KeyboardInterrupt()
+            return m.RELOAD
+        def stop(self): events.append('stop')
+    passes = []
+    with mock.patch.object(m, 'Subscription', Watched):
+        try: m.supervise(lambda save=False: passes.append(save), program=Replaced())
+        except KeyboardInterrupt: pass
+    assert events[:4] == ['stop', 'run', 'stop', 'run'] and passes[:3] == [False, False, False], (events, passes)
+# The watcher's program counts as replaced once a different file is in place,
+# unchanged since the previous look, and no pacman transaction is running (a
+# lock no pacman holds is stale). A missing or unrunnable file is never run,
+# and one that fails to run is tried again later, backing off.
+with tempfile.TemporaryDirectory() as temporary:
+    directory = Path(temporary); path = directory / 'omarchy-audio-asahi-mic-map'; lock = directory / 'db.lck'
+    pacman = [True]
+    def put(text, mode=0o755):
+        new = directory / 'new'; new.write_text(text); new.chmod(mode); os.replace(new, path)
+    def watched(): return m.Program(path, lock=lock, running=lambda: pacman[0])
+    put('old')
+    program = watched()
+    assert not program.replaced() and not program.replaced(), 'the started program is current'
+    put('new')
+    assert not program.replaced(), 'a file just written may still be changing'
+    assert program.replaced(), 'a replaced file unchanged since the previous look is run'
+    program = watched()
+    put('newer'); lock.touch()
+    assert not program.replaced() and not program.replaced() and not program.replaced(), 'not while pacman holds its lock'
+    pacman[0] = False
+    assert program.replaced(), 'a lock no pacman holds is stale'
+    lock.unlink()
+    program = watched()
+    path.unlink()
+    assert not program.replaced() and not program.replaced(), 'a removed program is not run'
+    put('not executable', 0o644)
+    assert not program.replaced() and not program.replaced(), 'an unrunnable program is not run'
+    clock = [1000.0]
+    with mock.patch.object(m.os, 'execv', side_effect=OSError('Text file busy')), mock.patch.object(m.time, 'monotonic', lambda: clock[0]):
+        program = watched(); put('busy')
+        program.replaced(); assert program.replaced()
+        program.run()
+        assert not program.replaced(), 'a program that would not run waits out a back-off'
+        clock[0] += 2.0
+        assert program.replaced(), 'and is then tried again'
+        program.run(); clock[0] += 2.0
+        assert not program.replaced(), 'the back-off grows'
+        clock[0] += 2.0
+        assert program.replaced()
+assert m.Program(Path('/nonexistent')).lock == m.PACMAN_LOCK
 # The live probe reads float samples from the mapping through parec: any
 # non-zero sample, however quiet, is signal; zeros (either sign) are digital
 # silence; a recorder that yields nothing is unknown.
@@ -758,4 +883,5 @@ assert '--watch' in unit and 'PartOf=graphical-session.target' in unit
 assert 'PartOf=pipewire.service' not in unit and 'After=graphical-session.target' not in unit
 print('ok - transactional Asahi mapping preserves choices/gain, rolls back failures and recovers lifecycle loss')
 print('ok - the mapping is a typed stereo remap source that replaces the 0.1.2 virtual source on upgrade')
+print('ok - the watcher subscribes before each pass, so a late DSP is mapped, and runs its program once an upgrade replaced it')
 PY

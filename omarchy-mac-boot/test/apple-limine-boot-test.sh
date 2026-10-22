@@ -236,19 +236,51 @@ pass "an image without GRUB activates Limine on its own"
 
 # A fresh image's first boot: deferred hardware setup rebuilds the boot image
 # after its last step, so a menu that already boots the UKI keeps it and the
-# leaf only asks for that rebuild.
+# leaf only asks for that rebuild. The image ships that menu with no identity,
+# so the leaf keys its entry to this Mac for the entry tool to rebuild in place.
 request="$test_tmp/boot-rebuild"
+sed -i.bak '/^comment: machine-id=/d' "$esp/limine.conf"
 cp "$esp/EFI/Linux/omarchy_linux-aurora.efi" "$test_tmp/image-uki"
 cp "$esp/limine.conf" "$test_tmp/image-menu"
 : >"$calls"
 OMARCHY_IMAGE_BOOT_REBUILD="$request" OMARCHY_GRUB_PROBE=omarchy-test-absent-grub-probe run || fail "the leaf finishes under deferred hardware setup"
 [[ -f $request ]] || fail "the leaf asks for the rebuild after the last deferred step"
 ! grep -Eq '^(limine-update|update-grub)$' "$calls" || fail "no UKI build and no GRUB step in the leaf" "$(cat "$calls")"
-cmp -s "$esp/EFI/Linux/omarchy_linux-aurora.efi" "$test_tmp/image-uki" && cmp -s "$esp/limine.conf" "$test_tmp/image-menu" ||
-  fail "the UKI and menu the Mac boots stay in place until the rebuild"
+cmp -s "$esp/EFI/Linux/omarchy_linux-aurora.efi" "$test_tmp/image-uki" || fail "the UKI the Mac boots stays in place until the rebuild"
+diff <(sed '/^comment: machine-id=/d' "$esp/limine.conf") "$test_tmp/image-menu" >/dev/null ||
+  fail "the menu the Mac boots stays in place until the rebuild" "$(cat "$esp/limine.conf")"
+[[ $(grep -A1 '^/+Omarchy$' "$esp/limine.conf" | tail -n 1) == "comment: machine-id=$(cat "$etc/machine-id")" ]] ||
+  fail "the image's entry is keyed to this Mac" "$(cat "$esp/limine.conf")"
+[[ $(grep -c '^comment: machine-id=' "$esp/limine.conf") == 1 ]] || fail "the entry is keyed once" "$(cat "$esp/limine.conf")"
 grep -q '^KERNEL_CMDLINE\[default\]="root=UUID=root-uuid ' "$etc/limine" || fail "the rebuild's command line is derived" "$(cat "$etc/limine")"
 [[ $(cat "$esp/EFI/BOOT/BOOTAA64.EFI") == "LIMINE v2" ]] || fail "Limine keeps the U-Boot slot"
-pass "under deferred hardware setup the leaf leaves the one UKI build to the end"
+pass "under deferred hardware setup the leaf keys the image's entry and leaves the one UKI build to the end"
+
+# A menu already keyed to this Mac is left as it is.
+rm -f "$request"
+cp "$esp/limine.conf" "$test_tmp/keyed-menu"
+OMARCHY_IMAGE_BOOT_REBUILD="$request" OMARCHY_GRUB_PROBE=omarchy-test-absent-grub-probe run || fail "the leaf reruns on a keyed menu"
+cmp -s "$esp/limine.conf" "$test_tmp/keyed-menu" || fail "a keyed menu is not keyed again" "$(cat "$esp/limine.conf")"
+[[ $(grep -c '^comment: machine-id=' "$esp/limine.conf") == 1 ]] || fail "a second run leaves one identity line" "$(cat "$esp/limine.conf")"
+pass "a menu keyed to this Mac is not keyed again"
+
+# An identity-less menu whose entry is not Omarchy's gets no identity line.
+rm -f "$request"
+sed 's|^/+Omarchy$|/+Renamed|' "$test_tmp/image-menu" >"$esp/limine.conf"
+cp "$esp/limine.conf" "$test_tmp/renamed-menu"
+OMARCHY_IMAGE_BOOT_REBUILD="$request" OMARCHY_GRUB_PROBE=omarchy-test-absent-grub-probe run || fail "the leaf runs on a menu without an Omarchy entry"
+! grep -q '^comment: machine-id=' "$esp/limine.conf" || fail "only the Omarchy entry is keyed" "$(cat "$esp/limine.conf")"
+pass "a menu without an Omarchy entry is not keyed"
+
+# Without a machine identity yet there is nothing to key the entry to.
+rm -f "$request"
+cp "$test_tmp/image-menu" "$esp/limine.conf"
+cp "$etc/machine-id" "$test_tmp/machine-id"
+: >"$etc/machine-id"
+OMARCHY_IMAGE_BOOT_REBUILD="$request" OMARCHY_GRUB_PROBE=omarchy-test-absent-grub-probe run || fail "the leaf runs without a machine identity"
+! grep -q 'machine-id=' "$esp/limine.conf" || fail "no identity is invented" "$(cat "$esp/limine.conf")"
+cp "$test_tmp/machine-id" "$etc/machine-id"
+pass "an unset machine identity leaves the image's entry unkeyed"
 
 # A menu that does not boot the UKI yet is built at once, request or not.
 rm -f "$request"
