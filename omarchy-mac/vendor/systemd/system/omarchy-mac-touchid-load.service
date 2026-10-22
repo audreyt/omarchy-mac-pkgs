@@ -1,0 +1,15 @@
+# Loads the Secure Enclave driver at boot once the owner has turned Touch ID on
+# (enable-fingerprint's record). The driver opens the iBoot System Container's
+# partition link as it probes and does not retry, so it loads after the link.
+[Unit]
+Description=Load the Touch ID driver
+ConditionPathExists=/etc/omarchy-mac/touchid-on
+Wants=dev-disk-by\x2dpartlabel-iBootSystemContainer.device
+After=dev-disk-by\x2dpartlabel-iBootSystemContainer.device local-fs.target
+Before=display-manager.service fprintd.service
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/omarchy-hw-apple-silicon
+ExecStart=/usr/bin/modprobe apple-sep
+TimeoutStartSec=30s

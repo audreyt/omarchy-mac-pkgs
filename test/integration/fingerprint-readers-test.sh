@@ -54,6 +54,20 @@ touch_id ready attached restored blocked
 detects && fail "a Mac whose matches cannot save their state is no reader"
 pass "a Touch ID that reads ready but cannot enrol or match is no reader"
 
+# Before the owner agrees, the boot status names a Touch ID that can be turned
+# on, so the invitation can ask; one that can't be set up is no reader.
+for status in available unsupported:board; do
+  rm -rf "$tmp/run"
+  mkdir -p "$tmp/run/omarchy-mac"
+  printf '%s\n' "$status" >"$tmp/run/omarchy-mac/touchid"
+  if [[ $status == "available" ]]; then
+    detects || fail "a Touch ID the owner can turn on is a reader"
+  else
+    detects && fail "a Touch ID that can't be set up is no reader"
+  fi
+done
+pass "the runtime finds a Touch ID the owner can turn on, and not one that can't be set up"
+
 # A Touch ID that isn't ready never hides a USB reader beside it.
 mkdir -p "$tmp/usb/1-0"
 printf '27c6\n' >"$tmp/usb/1-0/idVendor"

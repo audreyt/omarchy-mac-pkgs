@@ -18,8 +18,8 @@ for file in key-names display-cutouts.json displays.conf keyrings audio.json fin
 done
 [[ $(grep -v '^#' "$platform/keyrings") == asahi-alarm-keyring ]] ||
   fail 'the platform names the [asahi-alarm] keyring for omarchy update to refresh'
-[[ $(grep -v '^#' "$platform/fingerprint-readers") == "/run/omarchy-mac/touchid ready" ]] ||
-  fail 'the platform names Touch ID by the status the activation records once it can enrol and match'
+[[ $(grep -v '^#' "$platform/fingerprint-readers") == $'/run/omarchy-mac/touchid ready\n/run/omarchy-mac/touchid available' ]] ||
+  fail 'the platform names Touch ID by its status: ready to enrol and match, or available to turn on'
 python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$platform/display-cutouts.json" ||
   fail 'the cutout description is valid JSON'
 [[ ! -e $stage/usr/share/omarchy ]] || fail "nothing is staged in the omarchy package's tree"
