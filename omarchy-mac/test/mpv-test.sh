@@ -104,6 +104,7 @@ sed -i 's/^hwdec=vaapi-copy$/hwdec=no/' "$work/edited/etc/mpv/mpv.conf"
 cp "$work/edited/etc/mpv/mpv.conf" "$work/expected"
 setup "$work/edited"
 cmp -s "$work/edited/etc/mpv/mpv.conf" "$work/expected" || fail 'an edited 0.1.4 default stays'
+cp "$work/released.conf" "$work/edited/etc/mpv/mpv.conf"
 printf '\n' >>"$work/edited/etc/mpv/mpv.conf"
 cp "$work/edited/etc/mpv/mpv.conf" "$work/expected"
 setup "$work/edited"
