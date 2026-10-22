@@ -55,21 +55,20 @@ echo 'hci1 unblocked'
 touch "$RADIO_READ"
 STUB
 # The kernel journal of this boot, one "tick|cursor|message" line per entry: an
-# entry appears once the stub clock reaches its tick, and an "old-" cursor was
-# logged before the service started, so --since leaves it out.
+# entry appears once the stub clock reaches its tick. Cursors name "old-" entries
+# logged before the service started and "late-" ones logged after.
 cat >"$work/bin/journalctl" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >>"$JOURNAL_CALLS"
 [[ ${JOURNAL_FAILS:-0} != "1" ]] || exit 3
 tick=$(<"$TICK")
-pattern= count= after= since=0 show_cursor=0
+pattern= count= after= show_cursor=0
 while (( $# )); do
   case $1 in
     -g) pattern=$2; shift ;;
     -n) count=$2; shift ;;
     -o) shift ;;
     --after-cursor) after=$2; shift ;;
-    --since) since=1; shift ;;
     --show-cursor) show_cursor=1 ;;
   esac
   shift
@@ -83,7 +82,6 @@ while IFS='|' read -r at cursor message; do
     [[ $cursor != "$after" ]] || passed=1
     continue
   fi
-  [[ $since == 0 || $cursor != old-* ]] || continue
   [[ -z $pattern || $message =~ $pattern ]] || continue
   cursors+=("$cursor") messages+=("$message")
 done <"$JOURNAL_FILE"
@@ -230,17 +228,27 @@ LOG
 SUCCESS=2 run_recovery
 ! rebound || fail 'a lagging journal does not hand this cycle the previous cycle timeouts'
 grep -Fq 'after-cursor old-e2' "$JOURNAL_CALLS" || fail 'the watch starts from the entry the kernel counted'
-# The entry never arrives: watch a bounded window from now instead.
+# The entry never arrives: watch from the service's start instead.
 SUCCESS=3 run_recovery
 ! rebound || fail 'an entry that never arrives falls back without reading old timeouts'
-grep -Fq 'watching from now instead' "$work/output" || fail 'the fallback is reported'
+grep -Fq "watching from the service's start instead" "$work/output" || fail 'the fallback is reported'
+grep -Fq 'after-cursor old-x1' "$JOURNAL_CALLS" || fail 'the fallback reads after the journal tail the service started at'
+# A timeout logged while the watch waits for the entry is still read.
+journal <<'LOG'
+0|old-e1|PM: suspend entry (s2idle)
+0|old-x1|PM: suspend exit
+4|late-t1|Bluetooth: hci0: command 0x0c01 tx timeout
+LOG
+SUCCESS=2 run_recovery
+rebound || fail 'the fallback keeps timeouts logged while waiting for the entry'
 pass 'the watch is tied to the current suspend cycle'
 
 wedged_resume
 NO_STATS=1 run_recovery
 rebound || fail 'without suspend statistics the latest entry this boot is used'
 journal <<'LOG'
-0|late-t1|Bluetooth: hci0: command 0x0c01 tx timeout
+0|old-b1|Linux version
+1|late-t1|Bluetooth: hci0: command 0x0c01 tx timeout
 LOG
 SUCCESS=0 run_recovery
 rebound || fail 'a missing suspend entry uses the bounded fallback'
@@ -265,6 +273,19 @@ STATS_AT=15:2 run_recovery
 rebound || fail 'a timeout after a second suspend during the watch is recovered'
 grep -Fq 'Suspended again while watching' "$work/output" || fail 'the watch reports following the newer resume'
 grep -Fq 'after-cursor late-e2' "$JOURNAL_CALLS" || fail 'the watch moves to the newer suspend entry'
+# The second suspend's entry never reaches the journal: the watch reads from
+# the pass before that suspend, skipping the first cycle's earlier timeout.
+journal <<'LOG'
+0|old-e1|PM: suspend entry (s2idle)
+0|old-x1|PM: suspend exit
+5|late-t1|Bluetooth: hci1: command 0x0c01 tx timeout
+16|late-t2|Bluetooth: hci0: command 0x0c01 tx timeout
+LOG
+STATS_AT=15:2 run_recovery
+rebound || fail 'a timeout after a second suspend with no journal entry is recovered'
+grep -Fq 'watching from just before the latest suspend instead' "$work/output" ||
+  fail 'the fallback after a second suspend is reported'
+grep -Fq 'after-cursor late-t1' "$JOURNAL_CALLS" || fail 'the fallback reads from the pass before the second suspend'
 pass 'a suspend during the watch moves it to the latest resume'
 
 journal <<'LOG'
