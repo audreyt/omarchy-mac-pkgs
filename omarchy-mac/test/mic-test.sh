@@ -1013,6 +1013,10 @@ with tempfile.TemporaryDirectory() as temporary:
         assert m.installed['pending'] and m.installed['retry_at'] == 135.0 and m.outage_due() == 29.0, 'a reloaded watcher keeps the retry time'
         pass_(audio)
         assert audio.restarts == 1, 'an early event after a reload asks nothing'
+        (lv2 / 'another.lv2').mkdir()
+        assert watcher().changed() and m.installed['retry_at'] == 135.0, 'a later change keeps the deferred retry time'
+        pass_(audio)
+        assert audio.restarts == 1, 'and asks nothing before it'
     with mock.patch.object(m.time, 'monotonic', return_value=135.0):
         pass_(audio)
         assert audio.restarts == 2 and not m.installed['pending'] and not json.loads(record.read_text())['pending']

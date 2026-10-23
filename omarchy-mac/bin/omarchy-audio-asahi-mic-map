@@ -864,7 +864,8 @@ class Installed:
         current = self.signature()
         if current is None or current == installed['signature'] or (self.lock.exists() and self.running()):
             return False
-        record_installed(True, current)
+        # A repair already deferred keeps its retry time.
+        record_installed(True, current, installed['retry_at'] if installed['pending'] else None)
         return True
 
 
