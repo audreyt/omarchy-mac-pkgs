@@ -271,7 +271,31 @@ mkdir -p "$fixture/etc"
 touch "$fixture/etc/touchid-on"
 ! run touchid-enable >/dev/null 2>&1 && [[ -e $fixture/etc/touchid-on ]] ||
   fail "a failure keeps the record of an owner who agreed earlier"
+machine apple,j414c apple,t6021 apple,arm-platform
+printf '#!/bin/sh\nprintf partial >"$2"\nexit 1\n' >"$fixture/extractors/extract-mesa-calibration"
+! run touchid-enable >/dev/null 2>&1 && [[ ! -e $fixture/firmware/updates/apple/mesa_calibration.bin &&
+  ! -e $fixture/firmware/updates/apple/mesa_calibration.bin.new ]] ||
+  fail 'a calibration read only partly is never installed under its name'
 printf '#!/bin/sh\necho calibration >>"%s"\nprintf calibration >"$2"\n' "$fixture/calls" >"$fixture/extractors/extract-mesa-calibration"
+run touchid-enable >/dev/null 2>&1 && [[ $(<"$fixture/firmware/updates/apple/mesa_calibration.bin") == "calibration" ]] ||
+  fail 'a retry after a partial read carves the calibration again'
+# A record or options that can't be written is a Touch ID that isn't on.
+machine apple,j414c apple,t6021 apple,arm-platform
+mkdir -p "$fixture/etc/touchid-on/in-the-way"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"agreement could not be recorded"* ]] && ! grep -q modprobe "$fixture/calls" ||
+  fail "an agreement that can't be recorded fails before anything loads" "$out"
+machine apple,j414c apple,t6021 apple,arm-platform
+mkdir -p "$fixture/etc/modprobe.conf/in-the-way"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"options could not be written"* && ! -e $fixture/etc/touchid-on ]] &&
+  ! grep -q modprobe "$fixture/calls" ||
+  fail "options that can't be written fail, take the agreement back and load nothing" "$out"
+machine apple,j414c apple,t6021 apple,arm-platform
+mkdir -p "$fixture/etc/modprobe.conf.new/in-the-way"
+touch "$fixture/etc/touchid-on"
+printf 'options apple_sep xart_writes=1 provision_keybag=1\n' >"$fixture/etc/modprobe.conf"
+! run touchid-enable >/dev/null 2>&1 && grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1' "$fixture/etc/modprobe.conf" &&
+  [[ -e $fixture/etc/touchid-on ]] ||
+  fail "a write that fails leaves an earlier agreement's options whole" "$(cat "$fixture/etc/modprobe.conf" 2>&1)"
 machine apple,j414c apple,t6021 apple,arm-platform
 mkdir -p "$fixture/etc"
 touch "$fixture/etc/touchid-on"
@@ -358,6 +382,12 @@ touch "$fixture/etc/touchid-on"
 ask ready '' && [[ ! -s $fixture/calls && ! -s $fixture/out ]] || fail 'a Touch ID the owner already turned on asks nothing'
 grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1' "$fixture/etc/modprobe.conf" ||
   fail 'a Touch ID turned on before the driver options existed gets them'
+# No options yet, and none can be written.
+rm "$fixture/etc/modprobe.conf"
+mkdir -p "$fixture/etc/modprobe.conf.new/in-the-way"
+! ask ready '' && grep -q 'options could not be written' "$fixture/out" && [[ ! -e $fixture/etc/modprobe.conf ]] ||
+  fail "options that can't be written for an earlier agreement fail" "$(<"$fixture/out")"
+rm -rf "$fixture/etc/modprobe.conf.new"
 rm "$fixture/etc/touchid-on"
 ! ask ready n && grep -q 'With FileVault on' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
   fail 'a Touch ID turned off earlier this boot asks again before turning back on'
@@ -367,6 +397,11 @@ touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf ]] &&
   grep -q 'key store for Linux stays' "$fixture/out" || fail "turning it off removes the owner's agreement and says the key store stays"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 || fail 'turning it off twice is fine'
+mkdir -p "$fixture/etc/touchid-on/in-the-way"
+! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && grep -q 'could not be turned off' "$fixture/out" &&
+  ! grep -q 'stops loading' "$fixture/out" ||
+  fail "a record that can't be removed fails and never says Touch ID stops loading" "$(<"$fixture/out")"
+rm -rf "$fixture/etc/touchid-on"
 touch "$fixture/keybag"
 run touchid-status
 [[ $(<"$fixture/run/touchid") == "available" && ! -s $fixture/calls ]] ||

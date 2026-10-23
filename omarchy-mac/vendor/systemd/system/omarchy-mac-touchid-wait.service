@@ -1,8 +1,11 @@
 # /dev/sep-bio appears a few seconds after the Secure Enclave driver binds, and
 # fprintd's allowance for it is resolved when fprintd starts. Waiting here, before
-# fprintd starts, keeps that allowance and its first look for readers.
+# fprintd starts, keeps that allowance and its first look for readers. It
+# follows the boot-time load itself: fprintd's ordering after both doesn't
+# order them, and a wait that looked first would find no device.
 [Unit]
 Description=Wait for Touch ID's device
+After=omarchy-mac-touchid-load.service
 
 [Service]
 Type=oneshot

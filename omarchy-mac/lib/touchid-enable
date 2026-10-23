@@ -53,9 +53,12 @@ fi
 if ! installed "$calibration"; then
   echo "Copying this Mac's Touch ID calibration..."
   mkdir -p -m 0755 "$firmware/updates/${calibration%/*}"
-  "$extractors/extract-mesa-calibration" -o "$firmware/updates/$calibration" >/dev/null ||
-    fail "this Mac's calibration could not be read"
-  chmod 0644 "$firmware/updates/$calibration"
+  # A partial carve never takes the calibration's name, which a retry would
+  # take for an installed one.
+  carved=$firmware/updates/$calibration
+  "$extractors/extract-mesa-calibration" -o "$carved.new" >/dev/null ||
+    { rm -f "$carved.new"; fail "this Mac's calibration could not be read"; }
+  chmod 0644 "$carved.new" && mv -f "$carved.new" "$carved" || { rm -f "$carved.new"; fail "this Mac's calibration could not be installed"; }
 fi
 if tr '\0' '\n' <"$tree/compatible" | grep -Fxq apple,t8140 && ! installed apple/msrk-j700.bin; then
   echo "Copying this Mac's Touch ID sensor key..."
@@ -75,10 +78,10 @@ fi
 
 # The record is the agreement: omarchy-mac-touchid-load.service loads the
 # driver at every boot while it exists, and disable-fingerprint removes it.
-mkdir -p -m 0755 "${agreed%/*}"
 [[ -e $agreed ]] || recorded=1
-printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." >"$agreed"
-chmod 0644 "$agreed"
+{ mkdir -p -m 0755 "${agreed%/*}" &&
+  printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." >"$agreed" &&
+  chmod 0644 "$agreed"; } || fail "the owner's agreement could not be recorded in $agreed"
 # The driver's options say so too. Today's kernels write by default, so this
 # changes nothing yet; a kernel that loads apple_sep read-only by default
 # (omacom/linux-aurora#180) writes only with it. A driver already running
@@ -87,10 +90,13 @@ preloaded=0
 if [[ -d $module && ! -e $options && ! -e $loaded ]]; then
   preloaded=1
 fi
-mkdir -p -m 0755 "${options%/*}"
-printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." \
-  "options apple_sep xart_writes=1 provision_keybag=1" >"$options"
-chmod 0644 "$options"
+# A write that fails partway never replaces the options, since a file without
+# them would load a read-only driver at every boot.
+{ mkdir -p -m 0755 "${options%/*}" &&
+  printf '%s\n' "# The owner turned on Touch ID; omarchy-mac's disable-fingerprint removes this." \
+    "options apple_sep xart_writes=1 provision_keybag=1" >"$options.new" &&
+  chmod 0644 "$options.new" && mv -fT "$options.new" "$options"; } ||
+  { rm -f "$options.new" 2>/dev/null; fail "the driver's options could not be written to $options"; }
 mkdir -p -m 0755 "${loaded%/*}"
 touch "$loaded"
 modprobe apple-sep || fail "the Secure Enclave driver did not load"

@@ -5,7 +5,11 @@
 omarchy-hw-apple-silicon || exit 0
 
 if [[ -e /etc/omarchy-mac/touchid-on || -e /etc/modprobe.d/omarchy-mac-touchid.conf ]]; then
-  rm -f /etc/omarchy-mac/touchid-on /etc/modprobe.d/omarchy-mac-touchid.conf
+  # A record left behind, on a read-only root say, loads the driver again.
+  if ! rm -f /etc/omarchy-mac/touchid-on /etc/modprobe.d/omarchy-mac-touchid.conf; then
+    echo "Touch ID could not be turned off: remove /etc/omarchy-mac/touchid-on and /etc/modprobe.d/omarchy-mac-touchid.conf" >&2
+    exit 1
+  fi
   echo "Touch ID stops loading at the next boot. The key store for Linux stays on this Mac."
 fi
 exit 0

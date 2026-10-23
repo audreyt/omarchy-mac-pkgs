@@ -142,8 +142,20 @@ hook=$work/root/usr/share/libalpm/hooks/90-omarchy-mac-touchid.hook
 grep -Fxq 'Target = usr/lib/udev/rules.d/94-omarchy-mac-touchid.rules' "$hook" &&
   grep -Fxq 'Operation = Install' "$hook" && grep -Fxq 'Operation = Upgrade' "$hook" &&
   grep -Fxq 'When = PostTransaction' "$hook" &&
-  grep -Fxq "Exec = /usr/bin/sh -c 'systemd-detect-virt --quiet --chroot || ! systemd-notify --booted || systemctl --quiet start omarchy-mac-touchid-activate.service || true'" "$hook" ||
-  fail 'the hook starts the unit after the transaction that installs or updates the rule, and never fails it'
+  grep -Fxq "Exec = /usr/bin/sh -c 'systemd-detect-virt --quiet --chroot || ! systemd-notify --booted || { systemctl --quiet start omarchy-mac-touchid-status.service; systemctl --quiet start omarchy-mac-touchid-activate.service; true; }'" "$hook" ||
+  fail 'the hook records the status, then activates, after the transaction that installs or updates the rule, and never fails it'
+# Run as pacman runs it, booted: the status first, the activation even when the
+# status fails, and the transaction never fails.
+hook_command=$(sed -n "s|^Exec = /usr/bin/sh -c '\(.*\)'$|\1|p" "$hook")
+mkdir -p "$fixture/hookbin"
+printf '#!/bin/sh\nexit 1\n' >"$fixture/hookbin/systemd-detect-virt"
+printf '#!/bin/sh\nexit 0\n' >"$fixture/hookbin/systemd-notify"
+printf '#!/bin/sh\necho "$@" >>"%s"\nexit 1\n' "$fixture/hookcalls" >"$fixture/hookbin/systemctl"
+chmod +x "$fixture/hookbin/"*
+: >"$fixture/hookcalls"
+PATH="$fixture/hookbin:$PATH" sh -c "$hook_command" &&
+  [[ $(<"$fixture/hookcalls") == $'--quiet start omarchy-mac-touchid-status.service\n--quiet start omarchy-mac-touchid-activate.service' ]] ||
+  fail 'the hook starts the status, then the activation, and never fails' "$(<"$fixture/hookcalls")"
 target=$(sed -n 's/^Target = //p' "$hook")
 [[ -f $work/root/$target ]] || fail "the hook's target is the staged rule" "$target"
 pass 'an install or update activates Touch ID in the same session'
@@ -163,6 +175,8 @@ grep -Fxq 'Wants=omarchy-mac-touchid-wait.service' "$dropin" &&
   fail 'fprintd starts after the wait and the activation'
 ! grep -qE '^(DeviceAllow|DevicePolicy|ExecStartPre)=' "$dropin" ||
   fail "the drop-in leaves fprintd's devices to libfprint-git, which owns the allowance"
+grep -Fxq 'After=omarchy-mac-touchid-load.service' "$wait_unit" ||
+  fail "the wait follows the boot-time load, so it never looks before the driver has a device"
 grep -Fxq 'Type=oneshot' "$wait_unit" && grep -Fxq 'TimeoutStartSec=20s' "$wait_unit" &&
   ! grep -q '^RemainAfterExit=' "$wait_unit" && ! grep -q '^\[Install\]' "$wait_unit" ||
   fail 'the wait runs again before each fprintd start, bounded, and needs no enabling'
