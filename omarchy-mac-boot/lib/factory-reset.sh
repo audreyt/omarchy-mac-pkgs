@@ -77,6 +77,29 @@ arm_factory_first_boot() {
   install -d -m 0755 "$dir" && install -m 0644 /dev/null "$dir/pending"
 }
 
+# A Neo's Touch ID sensor key belongs to the Mac: the factory root keeps the
+# copy omarchy-mac kept, or else the one Touch ID was turned on with, where
+# omarchy-mac's touchid-status keeps it.
+SENSOR_KEYS=(var/lib/omarchy-mac/msrk-j700.bin usr/lib/firmware/updates/apple/msrk-j700.bin)
+carry_sensor_key() {
+  local next=$1 rel source="" target=$1/var/lib/omarchy-mac/msrk-j700.bin staged
+  for rel in "${SENSOR_KEYS[@]}"; do
+    if [[ -f $MAC_BOOT_ROOT/$rel && -s $MAC_BOOT_ROOT/$rel && ! -L $MAC_BOOT_ROOT/$rel ]]; then
+      source=$MAC_BOOT_ROOT/$rel
+      break
+    fi
+  done
+  [[ -n $source ]] || return 0
+  install -d -m 0700 "${target%/*}" || return 1
+  staged=$(mktemp "$target.XXXXXX") || return 1
+  if cp -- "$source" "$staged" && chmod 0600 "$staged" && sync "$staged" && mv -fT "$staged" "$target" &&
+    sync "${target%/*}"; then
+    return 0
+  fi
+  rm -f "$staged"
+  return 1
+}
+
 # Firmware, m1n1 and its device trees are on the ESP, outside the snapshot, and
 # match the kernel in /boot. The factory root must carry that same kernel, or
 # its boot files would pair it with another kernel's device trees.
@@ -435,6 +458,7 @@ reset_prepare() {
     refuse "Could not save the current boot files. Nothing was changed."
   scrub_factory_baseline "$baseline" || refuse "Could not remove the first-boot markers from the @factory snapshot."
   arm_factory_first_boot "$next" || refuse "Could not arm the factory system's first boot."
+  carry_sensor_key "$next" || refuse "Could not keep this Mac's Touch ID sensor key for the next owner."
   if [[ -n $uuid ]]; then
     stage_reset_unlock "$next" "$uuid" || refuse "Could not stage the factory system's disk unlock."
   fi

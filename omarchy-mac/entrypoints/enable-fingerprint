@@ -50,8 +50,8 @@ echo "We haven't seen this since Touch ID shipped in Aurora's kernels, but back"
 echo "up anything on macOS you still need before you turn it on."
 echo
 if (( neo )) && [[ -s /var/lib/omarchy-mac/msrk-j700.bin ]]; then
-  echo "The installer kept a copy of this Mac's sensor key for Linux, readable by"
-  echo "root only. It stays even if you say no or turn Touch ID off later."
+  echo "A copy of this Mac's sensor key is kept for Linux, readable by root only."
+  echo "It stays even if you say no or turn Touch ID off later."
   echo
 elif (( neo )); then
   echo "Linux also keeps a copy of this Mac's sensor key, readable by root only."

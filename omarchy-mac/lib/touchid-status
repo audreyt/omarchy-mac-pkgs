@@ -14,6 +14,8 @@ omarchy-hw-apple-silicon || exit 0
 # The installer stages the Neo's sensor key on the ESP, outside the firmware
 # archives. It moves here, root-only, and touchid-enable installs it only once
 # the owner agrees; it stays if they say no or turn Touch ID off.
+# omarchy-mac-boot's reset-prepare carries it, at this path, into a factory
+# reset's root.
 # The installer that stages it makes images that mount the ESP at /boot/efi.
 # The ESP copy goes only once the root's copy is on disk, so a crash right after
 # the move can't lose both. An empty file is an interrupted write and stays,

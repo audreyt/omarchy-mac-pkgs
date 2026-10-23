@@ -299,10 +299,10 @@ touch "$fixture/keybag"
 ! ask available n && grep -q "sensor key, readable by root only" "$fixture/out" &&
   grep -q 'earlier Touch ID setup created' "$fixture/out" && ! grep -q 'creates a key store' "$fixture/out" ||
   fail 'a Neo with a key store is told what applies to it' "$(<"$fixture/out")"
-! grep -q 'The installer kept' "$fixture/out" || fail "a Neo without the installer's key isn't told the installer kept one"
+! grep -q 'is kept for Linux' "$fixture/out" || fail "a Neo without a kept key isn't told one is kept"
 mkdir -p "$fixture/keys"
 printf staged >"$fixture/keys/msrk-j700.bin"
-! ask available n && grep -q "The installer kept a copy of this Mac's sensor key" "$fixture/out" &&
+! ask available n && grep -q "A copy of this Mac's sensor key is kept for Linux" "$fixture/out" &&
   grep -q 'It stays even if you say no' "$fixture/out" && ! grep -q 'Linux also keeps a copy' "$fixture/out" &&
   [[ -f $fixture/keys/msrk-j700.bin ]] ||
   fail "a Neo with its installer's key is told it is kept, and saying no leaves it" "$(<"$fixture/out")"
