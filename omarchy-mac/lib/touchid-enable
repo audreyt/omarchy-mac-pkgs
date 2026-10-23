@@ -72,10 +72,12 @@ if tr '\0' '\n' <"$tree/compatible" | grep -Fxq apple,t8140 && ! installed apple
   # it takes its name only once whole. Turning Touch ID off deletes it.
   echo "Reading this Mac's Touch ID sensor key..."
   mkdir -p -m 0755 "$firmware/updates/apple"
+  # No key was installed, so whatever takes its name from here is this run's:
+  # a failure, even one the extractor reports after its rename, takes it back
+  # with the agreement.
+  rebuilt=1
   "$python" -I "$helpers/touchid-root-key" --archive "$esp/asahi/all_firmware.tar.gz" --container "$container" \
     -o "$firmware/updates/apple/msrk-j700.bin" || fail "this Mac's sensor key could not be read"
-  # A yes that fails later takes back the key with the agreement.
-  rebuilt=1
 fi
 
 # The record is the agreement: omarchy-mac-touchid-load.service loads the

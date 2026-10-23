@@ -329,6 +329,12 @@ touch "$fixture/modprobe-fails"
 ! run touchid-enable >/dev/null 2>&1 && cmp -s "$installed_key" "$work/factory/key.bin" ||
   fail "a failure leaves a sensor key this run didn't rebuild"
 rm "$fixture/modprobe-fails"
+# An extractor that fails after its rename (a directory sync, say) leaves no key.
+neo
+printf '#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\nprintf key >"$2"\nexit 1\n' >"$fixture/bin/late-failing-python"
+chmod +x "$fixture/bin/late-failing-python"
+! python=$fixture/bin/late-failing-python run touchid-enable >/dev/null 2>&1 && [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] ||
+  fail "a key the extractor installed before failing is taken back" "$(key_copies)"
 machine apple,j414c apple,t6021 apple,arm-platform
 echo not-ready >"$fixture/activation"
 ! out=$(run touchid-enable 2>&1) && [[ $out == *"did not become ready (not-ready)"* ]] && ! grep -q try-restart "$fixture/calls" ||
