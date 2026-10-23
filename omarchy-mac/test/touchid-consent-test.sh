@@ -19,8 +19,10 @@ grep -Fxq 'ExecStart=/usr/lib/omarchy-mac/touchid-status' "$units/omarchy-mac-to
   fail 'the status is recorded before the greeter or fprintd look for a reader'
 load=$units/omarchy-mac-touchid-load.service
 grep -Fxq 'ConditionPathExists=/etc/omarchy-mac/touchid-on' "$load" && grep -Fxq 'ExecStart=/usr/bin/modprobe apple-sep' "$load" &&
-  grep -Fxq 'After=dev-disk-by\x2dpartlabel-iBootSystemContainer.device local-fs.target' "$load" ||
+  grep -Fxq 'ExecStartPre=/usr/bin/udevadm wait --timeout=20 /dev/disk/by-partlabel/iBootSystemContainer' "$load" ||
   fail "the driver loads at boot only on the owner's record, after the iBoot System Container's link it opens"
+! grep -Eq '^(Wants|Requires|BindsTo|After)=.*\.device' "$load" ||
+  fail "the load waits for the link only once its condition holds: a device dependency holds up every boot"
 for name in enable-fingerprint disable-fingerprint; do
   [[ -x $work/root/usr/lib/omarchy/mac/$name ]] || fail "the $name entrypoint is staged for omarchy-lifecycle-dispatch"
 done
@@ -337,12 +339,14 @@ mkdir -p "$entry"
 for name in enable-fingerprint disable-fingerprint; do
   sed -e "s|/run/omarchy-mac/touchid|$fixture/run/touchid|g" -e "s|/var/lib/aurora-sep-keybag.bin|$fixture/keybag|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-enable|$fixture/bin/enable-stub|g" -e "s|/etc/omarchy-mac/touchid-on|$fixture/etc/touchid-on|g" \
+    -e "s|/usr/lib/omarchy-mac/touchid-eligibility|$fixture/bin/eligibility-stub|g" \
     -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" -e "s|/var/lib/omarchy-mac/|$fixture/keys/|g" \
     -e "s|/proc/device-tree/compatible|$tree/compatible|g" "$ROOT/entrypoints/$name" >"$entry/$name"
   chmod +x "$entry/$name"
 done
 printf '#!/bin/sh\necho enable >>"%s"\nexit 0\n' "$fixture/calls" >"$fixture/bin/enable-stub"
-chmod +x "$fixture/bin/enable-stub"
+printf '#!/bin/sh\ncat "%s"\n' "$fixture/eligibility" >"$fixture/bin/eligibility-stub"
+chmod +x "$fixture/bin/enable-stub" "$fixture/bin/eligibility-stub"
 ask() {
   : >"$fixture/calls"
   printf '%s\n' "$2" >"$fixture/answer"
@@ -391,8 +395,35 @@ rm -rf "$fixture/etc/modprobe.conf.new"
 rm "$fixture/etc/touchid-on"
 ! ask ready n && grep -q 'With FileVault on' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
   fail 'a Touch ID turned off earlier this boot asks again before turning back on'
-! ask unsupported:board '' && grep -q 'unsupported:board' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
-  fail 'an unsupported Mac is told why, and nothing turns on'
+# Where Touch ID can't be set up, the setup goes on, so a USB reader enrols.
+ask unsupported:board '' && grep -q 'unsupported:board' "$fixture/out" && grep -q 'any other fingerprint reader' "$fixture/out" &&
+  [[ ! -s $fixture/calls ]] || fail 'an unsupported Mac is told why, turns nothing on, and lets the setup go on' "$(<"$fixture/out")"
+without_status() {
+  : >"$fixture/calls"
+  rm -f "$fixture/run/touchid"
+  printf '%s\n' "$1" >"$fixture/eligibility"
+  printf '%s\n' "$2" | PATH="$fixture/bin:$PATH" "$entry/enable-fingerprint" >"$fixture/out" 2>&1
+}
+without_status none '' && [[ ! -s $fixture/out && ! -s $fixture/calls ]] ||
+  fail 'a Mac with no sensor, which records no status, lets the setup go on and says nothing' "$(<"$fixture/out")"
+! without_status available n && grep -q 'With FileVault on' "$fixture/out" && grep -q 'Touch ID stays off' "$fixture/out" &&
+  [[ ! -s $fixture/calls ]] ||
+  fail 'a status service that failed is worked out again, and an available Mac still asks' "$(<"$fixture/out")"
+without_status unsupported:m1-family '' && grep -q 'unsupported:m1-family' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
+  fail 'an M1 Mac with no status lets the setup go on' "$(<"$fixture/out")"
+# An agreed Mac gets its options whatever its status: a driver loaded read-only
+# without them reads blocked, and reaches ready only once they exist.
+touch "$fixture/etc/touchid-on"
+rm -f "$fixture/etc/modprobe.conf"
+ask blocked '' && grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1' "$fixture/etc/modprobe.conf" &&
+  grep -q 'Restart this Mac' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
+  fail 'an agreed Mac that reads blocked gets its options and is told to restart' "$(<"$fixture/out")"
+# An agreed Mac whose activation hasn't answered is never asked again, so a no
+# can't claim to leave on a Touch ID that is on.
+without_status available n && ! grep -qE 'With FileVault on|stays off' "$fixture/out" && grep -q "isn't ready yet (no status)" "$fixture/out" &&
+  [[ -e $fixture/etc/touchid-on && ! -s $fixture/calls ]] ||
+  fail 'an agreed Mac with no status is told to restart, not asked again' "$(<"$fixture/out")"
+rm -f "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
 touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf ]] &&
   grep -q 'key store for Linux stays' "$fixture/out" || fail "turning it off removes the owner's agreement and says the key store stays"
@@ -410,7 +441,7 @@ pass 'enable-fingerprint asks before anything turns on, and turning it off lasts
 
 if command -v systemd-analyze >/dev/null; then
   mkdir -p "$work/root/usr/bin"
-  for command in omarchy-hw-apple-silicon modprobe; do
+  for command in omarchy-hw-apple-silicon modprobe udevadm; do
     printf '#!/bin/sh\nexit 0\n' >"$work/root/usr/bin/$command"
     chmod +x "$work/root/usr/bin/$command"
   done
