@@ -74,12 +74,10 @@ echo "  - With FileVault off, macOS resets its keychain and Touch ID"
 echo "    fingerprints and shows a warning."
 echo "Back up anything on macOS you still need before you turn it on."
 echo
-if (( neo )) && [[ -s /var/lib/omarchy-mac/msrk-j700.bin ]]; then
-  echo "A copy of this Mac's sensor key is kept for Linux, readable by root only."
-  echo "It stays even if you say no or turn Touch ID off later."
-  echo
-elif (( neo )); then
-  echo "Linux also keeps a copy of this Mac's sensor key, readable by root only."
+if (( neo )); then
+  echo "On this Mac it also reads the sensor's key from the factory records the"
+  echo "installer left on the boot partition, into a firmware file only root can"
+  echo "read. Turning Touch ID off deletes that file."
   echo
 fi
 echo "Turning Touch ID off later removes your fingerprints and stops the driver"

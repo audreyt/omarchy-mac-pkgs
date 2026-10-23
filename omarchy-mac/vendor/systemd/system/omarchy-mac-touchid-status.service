@@ -1,8 +1,8 @@
 # Records at boot whether Touch ID can be set up, before anything loads the
 # Secure Enclave driver, so Omarchy can ask the owner (fingerprint-readers
-# names the record). It also moves the sensor key a Neo's installer staged
-# off the ESP, so it runs after /boot/efi is mounted. Pulled in by the
-# package's multi-user.target.wants link.
+# names the record). A Neo's answer depends on the factory records
+# asahi-installer leaves on the ESP, so it runs after /boot/efi is mounted.
+# Pulled in by the package's multi-user.target.wants link.
 [Unit]
 Description=Check whether Touch ID can be set up
 After=local-fs.target boot-efi.mount systemd-modules-load.service

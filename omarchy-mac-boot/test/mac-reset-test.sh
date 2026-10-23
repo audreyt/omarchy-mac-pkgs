@@ -424,50 +424,18 @@ printf 'unexpected' | run reset-commit || fail "commit" "$(cat "$test_tmp/err")"
   fail "an unencrypted factory root boots into the Mac's first boot again"
 pass "an unencrypted reset stages no unlock and writes no key"
 
-# A Neo's sensor key belongs to the Mac: the factory root keeps it, root-only,
-# from the copy omarchy-mac kept or else the one Touch ID was turned on with.
-fixture
-run reset-prepare "$next" "$root/dev/luks" || fail "prepare" "$(cat "$test_tmp/err")"
-[[ ! -e $next/var/lib/omarchy-mac ]] || fail "a Mac without a sensor key gives the factory root none"
-for source in var/lib/omarchy-mac usr/lib/firmware/updates/apple; do
-  fixture
-  mkdir -p "$root/$source"
-  printf 'key from %s' "$source" >"$root/$source/msrk-j700.bin"
-  run reset-prepare "$next" "$root/dev/luks" || fail "prepare with a sensor key in $source" "$(cat "$test_tmp/err")"
-  [[ -f $next/var/lib/omarchy-mac/msrk-j700.bin && $(<"$next/var/lib/omarchy-mac/msrk-j700.bin") == "key from $source" && $(stat -c %a "$next/var/lib/omarchy-mac/msrk-j700.bin") == 600 &&
-    $(stat -c %a "$next/var/lib/omarchy-mac") == 700 ]] ||
-    fail "the factory root keeps the sensor key from $source, root-only" "$(ls -la "$next/var/lib/omarchy-mac" 2>&1)"
-  ! compgen -G "$next/var/lib/omarchy-mac/msrk-j700.bin.*" >/dev/null || fail "no temporary copy is left"
-  run reset-rollback || fail "rollback" "$(cat "$test_tmp/err")"
-  rm -rf "${root:?}/usr/lib/firmware/updates"
-done
+# A Neo's Touch ID sensor key is rebuilt from the ESP when its next owner agrees
+# to turn Touch ID on, so the factory root is given none, whatever this one had.
 fixture
 mkdir -p "$root/var/lib/omarchy-mac" "$root/usr/lib/firmware/updates/apple"
 printf kept >"$root/var/lib/omarchy-mac/msrk-j700.bin"
 printf installed >"$root/usr/lib/firmware/updates/apple/msrk-j700.bin"
 run reset-prepare "$next" "$root/dev/luks" || fail "prepare" "$(cat "$test_tmp/err")"
-[[ -f $next/var/lib/omarchy-mac/msrk-j700.bin && $(<"$next/var/lib/omarchy-mac/msrk-j700.bin") == kept ]] || fail "the copy omarchy-mac kept comes first"
+[[ -z $(find "$next" -name 'msrk-j700.bin*' -print -quit) ]] ||
+  fail "the factory root is given no sensor key" "$(find "$next" -name 'msrk-j700.bin*')"
 run reset-rollback || fail "rollback" "$(cat "$test_tmp/err")"
-fixture
-mkdir -p "$root/var/lib/omarchy-mac/msrk-j700.bin/stray" "$root/usr/lib/firmware/updates/apple"
-printf installed >"$root/usr/lib/firmware/updates/apple/msrk-j700.bin"
-run reset-prepare "$next" "$root/dev/luks" || fail "a stray directory at the kept key's path doesn't stop the reset" "$(cat "$test_tmp/err")"
-[[ -f $next/var/lib/omarchy-mac/msrk-j700.bin && $(<"$next/var/lib/omarchy-mac/msrk-j700.bin") == installed ]] ||
-  fail "a directory at the kept key's path falls through to the installed key"
-run reset-rollback || fail "rollback" "$(cat "$test_tmp/err")"
-rm -rf "${root:?}/usr/lib/firmware/updates"
-rm -rf "${root:?}/usr/lib/firmware/updates"
-fixture
-mkdir -p "$root/var/lib/omarchy-mac" "$next/var/lib/omarchy-mac/msrk-j700.bin/in-the-way"
-printf key >"$root/var/lib/omarchy-mac/msrk-j700.bin"
-if run reset-prepare "$next" "$root/dev/luks"; then fail "a sensor key the factory root cannot keep fails prepare"; fi
-error_says "Touch ID sensor key"
-! compgen -G "$next/var/lib/omarchy-mac/msrk-j700.bin.*" >/dev/null &&
-  [[ ! -e $next/var/lib/omarchy-mac/msrk-j700.bin/in-the-way/msrk-j700.bin && -z $(ls "$next/var/lib/omarchy-mac/msrk-j700.bin/in-the-way") ]] ||
-  fail "a failed copy leaves nothing behind" "$(ls -laR "$next/var/lib/omarchy-mac")"
-run reset-rollback || fail "rollback" "$(cat "$test_tmp/err")"
-rm -rf "${root:?}/usr/lib/firmware/updates"
-pass "a factory reset keeps a Neo's sensor key for the next owner, or stops"
+rm -rf "${root:?}/var/lib/omarchy-mac" "${root:?}/usr/lib/firmware/updates"
+pass "a factory reset gives the factory root no sensor key"
 
 # A key the Boot partition cannot keep is reported, with no leftovers.
 fixture

@@ -16,16 +16,22 @@ loaded=${status_file%/*}/touchid-loaded
 helpers=${OMARCHY_MAC_TOUCHID_HELPERS:-/usr/lib/omarchy-mac}
 node_path=${OMARCHY_MAC_TOUCHID_NODE:-/dev/sep-bio}
 keybag=${OMARCHY_MAC_TOUCHID_KEYBAG:-/var/lib/aurora-sep-keybag.bin}
-keys=${OMARCHY_MAC_TOUCHID_KEYS:-/var/lib/omarchy-mac}
+esp=${OMARCHY_MAC_TOUCHID_ESP:-/boot/efi}
+container=${OMARCHY_MAC_TOUCHID_CONTAINER:-/dev/disk/by-partlabel/iBootSystemContainer}
+python=${OMARCHY_MAC_TOUCHID_PYTHON:-python3}
 omarchy-hw-apple-silicon || exit 0
 
 # Once this run records the agreement, a failure takes it back, so a Touch ID
 # that never came up doesn't load at every boot and is offered again after a
 # restart. A record from an earlier agreement stays.
 recorded=0
+rebuilt=0
 fail() {
   if (( recorded )); then
     rm -f "$agreed" "$options"
+  fi
+  if (( rebuilt )); then
+    rm -f "$firmware/updates/apple/msrk-j700.bin"
   fi
   echo "Touch ID was not turned on: $1" >&2
   exit 1
@@ -61,19 +67,15 @@ if ! installed "$calibration"; then
   chmod 0644 "$carved.new" && mv -f "$carved.new" "$carved" || { rm -f "$carved.new"; fail "this Mac's calibration could not be installed"; }
 fi
 if tr '\0' '\n' <"$tree/compatible" | grep -Fxq apple,t8140 && ! installed apple/msrk-j700.bin; then
-  echo "Copying this Mac's Touch ID sensor key..."
+  # Rebuilt only now, from the factory records asahi-installer leaves on the
+  # ESP and checked against this Mac's iBoot System Container; root-only, and
+  # it takes its name only once whole. Turning Touch ID off deletes it.
+  echo "Reading this Mac's Touch ID sensor key..."
   mkdir -p -m 0755 "$firmware/updates/apple"
-  # The installer's copy, which touchid-status moved off the ESP, stays where
-  # it is, so turning Touch ID off and on again needs no reinstall. A partial
-  # copy never takes the key's name.
-  key=$firmware/updates/apple/msrk-j700.bin
-  if [[ -s $keys/msrk-j700.bin ]]; then
-    (umask 077 && cp "$keys/msrk-j700.bin" "$key.new") || { rm -f "$key.new"; fail "this Mac's sensor key could not be copied"; }
-  else
-    (umask 077 && "$extractors/extract-sensor-root-key" -o "$key.new" >/dev/null) ||
-      { rm -f "$key.new"; fail "this Mac's sensor key could not be read"; }
-  fi
-  chmod 0600 "$key.new" && mv -f "$key.new" "$key" || { rm -f "$key.new"; fail "this Mac's sensor key could not be installed"; }
+  "$python" -I "$helpers/touchid-root-key" --archive "$esp/asahi/all_firmware.tar.gz" --container "$container" \
+    -o "$firmware/updates/apple/msrk-j700.bin" || fail "this Mac's sensor key could not be read"
+  # A yes that fails later takes back the key with the agreement.
+  rebuilt=1
 fi
 
 # The record is the agreement: omarchy-mac-touchid-load.service loads the

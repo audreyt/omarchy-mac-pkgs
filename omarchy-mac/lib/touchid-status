@@ -6,63 +6,7 @@
 status_file=${OMARCHY_MAC_TOUCHID_STATUS:-/run/omarchy-mac/touchid}
 agreed=${OMARCHY_MAC_TOUCHID_AGREED:-/etc/omarchy-mac/touchid-on}
 helpers=${OMARCHY_MAC_TOUCHID_HELPERS:-/usr/lib/omarchy-mac}
-esp=${OMARCHY_MAC_TOUCHID_ESP:-/boot/efi}
-keys=${OMARCHY_MAC_TOUCHID_KEYS:-/var/lib/omarchy-mac}
-snapshot_boot=${OMARCHY_MAC_SNAPSHOT_MARKER:-/run/omarchy-snapshot-boot}
 omarchy-hw-apple-silicon || exit 0
-
-# The Neo's sensor key, as DER: comb { fdrd, secb }. A file whose envelope
-# doesn't add up to its size is truncated or stale, from a write the Mac lost.
-der_at() {
-  local -a byte
-  local length=0 count index
-  read -ra byte < <(od -An -tu1 -v -j "$2" -N 6 "$1")
-  (( ${#byte[@]} >= 2 )) || return 1
-  if (( byte[1] < 0x80 )); then
-    echo "${byte[0]} 2 ${byte[1]}"
-    return
-  fi
-  count=$(( byte[1] & 0x7f ))
-  (( count >= 1 && count <= 3 && ${#byte[@]} >= 2 + count )) || return 1
-  for ((index = 0; index < count; index++)); do
-    length=$(( length << 8 | byte[2 + index] ))
-  done
-  echo "${byte[0]} $(( 2 + count )) $length"
-}
-whole_sensor_key() {
-  local size tag header length offset tags=""
-  size=$(stat -c %s "$1") || return 1
-  (( size <= 16 << 20 )) || return 1
-  read -r tag header length < <(der_at "$1" 0) || return 1
-  (( tag == 0x30 && header + length == size )) || return 1
-  [[ $(od -An -tx1 -j "$header" -N 6 "$1" | tr -d ' \n') == 1604636f6d62 ]] || return 1
-  for ((offset = header; offset < size; offset += header + length)); do
-    (( ${#tags} < 9 )) || return 1
-    read -r tag header length < <(der_at "$1" "$offset") || return 1
-    tags+=" $tag"
-  done
-  (( offset == size )) && [[ $tags == " 22 48 48" ]]
-}
-
-# The installer stages the key on the ESP (mounted at /boot/efi). It moves here,
-# root-only, for touchid-enable once the owner agrees; reset-prepare carries this
-# path. A damaged file, and every file on a snapshot boot, stays on the ESP.
-staged=$esp/vendorfw/touchid/msrk-j700.bin
-# An interrupted write leaves its temporary copy behind.
-rm -f "$staged.new" 2>/dev/null
-if [[ -s $staged && ! -e $snapshot_boot ]]; then
-  if ! whole_sensor_key "$staged"; then
-    echo "The sensor key the installer staged is damaged, so it isn't used and stays on the ESP" >&2
-  elif install -d -m 0700 "$keys" && (umask 077 && cp "$staged" "$keys/msrk-j700.bin.new") &&
-    chmod 0600 "$keys/msrk-j700.bin.new" && whole_sensor_key "$keys/msrk-j700.bin.new" &&
-    sync "$keys/msrk-j700.bin.new" && mv -f "$keys/msrk-j700.bin.new" "$keys/msrk-j700.bin" && sync "$keys"; then
-    rm -f "$staged"
-  else
-    rm -f "$keys/msrk-j700.bin.new" 2>/dev/null
-    echo "The sensor key the installer staged could not be moved off the ESP" >&2
-  fi
-fi
-rmdir "${staged%/*}" 2>/dev/null
 
 # Turned on: omarchy-mac-touchid-load.service loads the driver, and the
 # activation records the status.

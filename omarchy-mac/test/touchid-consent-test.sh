@@ -43,36 +43,92 @@ printf '#!/bin/sh\necho systemctl "$@" >>"%s"\n[ "$1" = start ] && printf "%%s\\
 printf '#!/bin/sh\n[ -e "%s" ] || echo /usr/lib/omarchy/mac/enable-fingerprint\n' "$fixture/no-hook" >"$fixture/bin/omarchy-lifecycle-dispatch"
 printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/sleep"
 printf '#!/bin/sh\necho calibration >>"%s"\nprintf calibration >"$2"\n' "$fixture/calls" >"$fixture/extractors/extract-mesa-calibration"
-printf '#!/bin/sh\necho root-key >>"%s"\nprintf key >"$2"\n' "$fixture/calls" >"$fixture/extractors/extract-sensor-root-key"
 chmod +x "$fixture/bin/"* "$fixture/extractors/"*
 
-# Sensor keys with the Neo's DER envelope, comb { fdrd, secb }, to stage.
-der() {
-  local size
-  size=$(stat -c %s "$2")
-  if (( size < 128 )); then
-    printf "\\x$1\\x$(printf %02x "$size")"
-  else
-    printf "\\x$1\\x82\\x$(printf %02x $((size >> 8)))\\x$(printf %02x $((size & 255)))"
-  fi
-  cat "$2"
+# A Neo's factory records as asahi-installer leaves them on the ESP, an iBoot
+# System Container holding them (and one that doesn't), and the key they make,
+# built here independently of touchid-root-key.
+mkdir -p "$work/factory"
+cat >"$work/factory.py" <<'PY'
+import hashlib, io, os, sys, tarfile
+def der(tag, value):
+    n = len(value)
+    head = bytes([n]) if n < 0x80 else (lambda size: bytes([0x80 | len(size)]) + size)(n.to_bytes((n.bit_length() + 7) // 8, "big"))
+    return bytes([tag]) + head + value
+out = sys.argv[1]
+im4p = der(0x30, der(0x16, b"IM4P") + der(0x16, b"MSRk") + der(0x16, b"1") + der(0x04, b"k" * 1500))
+msrk = der(0x30, der(0x16, b"IMG4") + im4p + der(0xA0, der(0x30, der(0x16, b"IM4M") + der(0x02, b"\x01") + b"\x31\x00")))
+seal = der(0x30, der(0x16, b"IM4M") + der(0x02, b"\x00") + der(0x04, b"s" * 900))
+other_seal = der(0x30, der(0x16, b"IM4M") + der(0x02, b"\x00") + der(0x04, b"o" * 900))
+trust = b"T" * 3191
+named = "trustobject-" + hashlib.sha256(trust).hexdigest().upper()
+def archive(name, records, extra=()):
+    """records go in com.apple.factorydata; extra are (path, data, None) for
+    a file or (path, None, (TarInfo type, link target)) anywhere."""
+    with tarfile.open(os.path.join(out, name), "w:gz") as tar:
+        entries = [("firmware/other.bin", b"abcd", None)] + [("com.apple.factorydata/" + n, d, None) for n, d in records]
+        for member, data, target in entries + list(extra):
+            info = tarfile.TarInfo(member)
+            if data is None:
+                info.type, info.linkname = target
+                tar.addfile(info)
+            else:
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+records = [("MSRk-00003356-AA", msrk), ("seal-00008140-001E", seal), (named, trust), ("trustobject-current", trust)]
+archive("all_firmware.tar.gz", records)
+archive("two-seals.tar.gz", records + [("seal-00008140-002F", other_seal)])
+archive("other-chip.tar.gz", [("MSRk-00003356-AA", msrk), ("seal-00008122-001E", seal), (named, trust), ("trustobject-current", trust)])
+# The trust bundle: a trustobject-current whose named bundle holds other bytes,
+# and, without trustobject-current, one bundle whose bytes don't match its name.
+archive("current-differs.tar.gz", records[:2] + [(named, b"U" * 3191), ("trustobject-current", trust)])
+archive("misnamed-trust.tar.gz", records[:2] + [("trustobject-" + hashlib.sha256(b"U").hexdigest().upper(), trust)])
+# An MSRk record whose payload isn't an MSRk.
+other_im4p = der(0x30, der(0x16, b"IM4P") + der(0x16, b"FSC2") + der(0x16, b"1") + der(0x04, b"k" * 1500))
+other_msrk = der(0x30, der(0x16, b"IMG4") + other_im4p + der(0xA0, der(0x30, der(0x16, b"IM4M") + der(0x02, b"\x01") + b"\x31\x00")))
+archive("wrong-payload.tar.gz", [("MSRk-00003356-AA", other_msrk)] + records[1:])
+archive("duplicate.tar.gz", records + [("seal-00008140-001E", seal)])
+archive("linked-seal.tar.gz", [records[0], records[2], records[3]],
+        [("com.apple.factorydata/seal-00008140-001E", None, (tarfile.SYMTYPE, "/etc/passwd"))])
+archive("oversized.tar.gz", records + [("trustobject-" + "0" * 64, b"\0" * ((16 << 20) + 1))])
+# A seal outside com.apple.factorydata is no record, and a later macOS's
+# subdirectory or link in the cache is skipped.
+archive("decoy.tar.gz", records, [("firmware/com.apple.factorydata.old/seal-00008140-DECOY", other_seal, None),
+                                  ("seal-00008140-DECOY", other_seal, None),
+                                  ("elsewhere/com.apple.factorydata/seal-00008140-DECOY", other_seal, None)])
+archive("unrelated.tar.gz", records, [("com.apple.factorydata/subdir", None, (tarfile.DIRTYPE, "")),
+                                      ("com.apple.factorydata/subdir/seal-00008140-NESTED", other_seal, None),
+                                      ("com.apple.factorydata/latest", None, (tarfile.SYMTYPE, "MSRk-00003356-AA")),
+                                      ("com.apple.factorydata/Info.plist", b"<plist/>", None)])
+filler = lambda n: bytes((i * 7) & 0xFF for i in range(n))
+with open(os.path.join(out, "isc.img"), "wb") as fd:
+    fd.write(filler(1 << 20) + msrk + filler(9 << 20) + seal + filler(4096) + trust + filler(1 << 20))
+with open(os.path.join(out, "other-isc.img"), "wb") as fd:
+    fd.write(filler(1 << 20) + msrk + trust + filler(1 << 20))
+with open(os.path.join(out, "wrong-payload-isc.img"), "wb") as fd:
+    fd.write(filler(1 << 20) + other_msrk + seal + trust + filler(1 << 20))
+with open(os.path.join(out, "no-trust-isc.img"), "wb") as fd:
+    fd.write(filler(1 << 20) + msrk + seal + filler(1 << 20))
+with open(os.path.join(out, "no-msrk-isc.img"), "wb") as fd:
+    fd.write(filler(1 << 20) + seal + trust + filler(1 << 20))
+# The seal straddles the scan's first 8 MiB read.
+with open(os.path.join(out, "boundary-isc.img"), "wb") as fd:
+    fd.write(filler((8 << 20) - 400) + seal + filler(4096) + msrk + trust + filler(1 << 20))
+image = der(0x30, der(0x16, b"IMG4") + im4p + der(0xA0, seal))
+with open(os.path.join(out, "key.bin"), "wb") as fd:
+    fd.write(der(0x30, der(0x16, b"comb") + der(0x30, der(0x16, b"fdrd") + der(0x04, image))
+                       + der(0x30, der(0x16, b"secb") + der(0x04, trust))))
+PY
+python3 -I "$work/factory.py" "$work/factory"
+# Any copy of the sensor key under the fixture other than the one named.
+key_copies() {
+  find "$fixture" -name 'msrk-j700.bin*' ! -path "${1:-/nonexistent}"
 }
-sensor_key() {
-  local part=$work/der
-  mkdir -p "$part"
-  head -c "$2" /dev/zero | tr '\0' k >"$part/payload"
-  { printf '\x16\x04fdrd'; der 04 "$part/payload"; } >"$part/fdrd"
-  { printf '\x16\x04secb'; der 04 "$part/payload"; } >"$part/secb"
-  { printf '\x16\x04comb'; der 30 "$part/fdrd"; der 30 "$part/secb"; } >"$part/comb"
-  der 30 "$part/comb" >"$1"
-}
-sensor_key "$work/key-a" 6000
-sensor_key "$work/key-b" 5000
 
 # A device tree: the machine's compatible list, a sensor node, and the identity.
 machine() {
   rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook" "$fixture/options-at-load" "$fixture/module" \
-    "$fixture/esp" "$fixture/keys"
+    "$fixture/esp"
   mkdir -p "$tree/soc/spi@39b108000/fingerprint@0" "$tree/chosen" "$fixture/firmware" "$fixture/run"
   printf '%s\0' "$@" >"$tree/compatible"
   printf 'apple,mesa-fingerprint\0' >"$tree/soc/spi@39b108000/fingerprint@0/compatible"
@@ -83,8 +139,9 @@ machine() {
 neo() {
   machine apple,j700 apple,t8140 apple,arm-platform
   printf 'apple/mesacal-j700.bin\0' >"$tree/soc/spi@39b108000/fingerprint@0/firmware-name"
-  mkdir -p "$fixture/firmware/vendor/apple"
+  mkdir -p "$fixture/firmware/vendor/apple" "$fixture/esp/asahi"
   printf sealed >"$fixture/firmware/vendor/apple/mesacal-j700.bin"
+  cp "$work/factory/all_firmware.tar.gz" "$fixture/esp/asahi/"
 }
 run() {
   PATH="$fixture/bin:$PATH" OMARCHY_MAC_TOUCHID_TREE=$tree OMARCHY_MAC_TOUCHID_FIRMWARE=$fixture/firmware \
@@ -92,8 +149,8 @@ run() {
     OMARCHY_MAC_TOUCHID_OPTIONS=$fixture/etc/modprobe.conf OMARCHY_MAC_TOUCHID_MODULE=$fixture/module \
     OMARCHY_MAC_TOUCHID_STATUS=$fixture/run/touchid OMARCHY_MAC_TOUCHID_HELPERS=$ROOT/lib \
     OMARCHY_MAC_TOUCHID_NODE=$fixture/sep-bio OMARCHY_MAC_TOUCHID_KEYBAG=$fixture/keybag \
-    OMARCHY_MAC_TOUCHID_ESP=$fixture/esp OMARCHY_MAC_TOUCHID_KEYS=$fixture/keys OMARCHY_MAC_SNAPSHOT_MARKER=$fixture/run/snapshot-boot \
-    OMARCHY_MAC_TOUCHID_PYTHON=${python:-sh} "$ROOT/lib/$1" "${@:2}"
+    OMARCHY_MAC_TOUCHID_ESP=$fixture/esp OMARCHY_MAC_TOUCHID_CONTAINER=${container:-$work/factory/isc.img} \
+    OMARCHY_MAC_TOUCHID_PYTHON=${python:-python3} "$ROOT/lib/$1" "${@:2}"
 }
 eligibility() {
   run touchid-eligibility
@@ -122,13 +179,15 @@ rm "$fixture/firmware/vendor/apple/mesacal-j700.bin"
 [[ $(eligibility) == "unsupported:no-calibration" ]] ||
   fail "the Neo's calibration must be the sealed one its installer wrote, never a fresh carve"
 neo
-[[ $(eligibility) == "available" ]] || fail "a Neo with its installer's calibration and a root-key extractor is available"
-mv "$fixture/extractors/extract-sensor-root-key" "$fixture/extractors/away"
-[[ $(eligibility) == "unsupported:no-root-key" ]] || fail 'a Neo without its root key or a way to rebuild it is unsupported'
-mkdir -p "$fixture/keys"
-printf staged >"$fixture/keys/msrk-j700.bin"
-[[ $(eligibility) == "available" ]] || fail "a Neo whose installer staged its sensor key needs no extractor"
-mv "$fixture/extractors/away" "$fixture/extractors/extract-sensor-root-key"
+[[ $(eligibility) == "available" ]] || fail "a Neo with its installer's calibration and its factory records on the ESP is available"
+python=no-such-python
+[[ $(eligibility) == "unsupported:no-root-key" ]] || fail "a Neo without Python can't rebuild its sensor key"
+unset python
+rm "$fixture/esp/asahi/all_firmware.tar.gz"
+[[ $(eligibility) == "unsupported:no-root-key" ]] || fail "a Neo without its factory records on the ESP can't rebuild its sensor key"
+mkdir -p "$fixture/firmware/updates/apple"
+cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"
+[[ $(eligibility) == "available" ]] || fail "a Neo whose sensor key is installed needs nothing else"
 pass 'only a Mac whose setup can finish is available'
 
 # At boot the status says so for the detector, and never loads the driver.
@@ -157,70 +216,16 @@ mkdir -p "$fixture/etc"
 touch "$fixture/etc/touchid-on"
 run touchid-status
 [[ ! -e $fixture/run/touchid && ! -s $fixture/calls ]] || fail 'once Touch ID is on, the activation records the status'
-# The installer stages the Neo's sensor key on the ESP; the status moves it to
-# a root-only place on the root, whether or not Touch ID is on.
+# Nothing reads a Neo's sensor key before its owner agrees, at boot or after.
 for agreed in no yes; do
   neo
-  mv "$fixture/extractors/extract-sensor-root-key" "$fixture/extractors/away"
-  mkdir -p "$fixture/esp/vendorfw/touchid" "$fixture/etc"
-  cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
-  # vfat mounted umask=0077 shows its files as 0700, and cp keeps that.
-  chmod 0700 "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+  mkdir -p "$fixture/etc"
   [[ $agreed == no ]] || touch "$fixture/etc/touchid-on"
   run touchid-status
-  cmp -s "$fixture/keys/msrk-j700.bin" "$work/key-a" && [[ $(stat -c %a "$fixture/keys/msrk-j700.bin") == 600 &&
-    $(stat -c %a "$fixture/keys") == 700 && ! -e $fixture/esp/vendorfw/touchid && -d $fixture/esp/vendorfw ]] ||
-    fail "the installer's sensor key moves off the ESP to a root-only file (agreed: $agreed)" "$(ls -lR "$fixture/esp" "$fixture/keys" 2>&1)"
-  [[ $agreed == yes || $(<"$fixture/run/touchid") == "available" ]] || fail 'a Neo with its staged key and no extractor is available'
-  [[ ! -e $fixture/firmware/updates/apple/msrk-j700.bin && ! -s $fixture/calls ]] || fail 'moving the key installs and loads nothing'
-  mv "$fixture/extractors/away" "$fixture/extractors/extract-sensor-root-key"
+  [[ $agreed == yes || $(<"$fixture/run/touchid") == "available" ]] || fail 'a Neo with its factory records on the ESP is available'
+  [[ -z $(key_copies) && ! -s $fixture/calls ]] && cmp -s "$fixture/esp/asahi/all_firmware.tar.gz" "$work/factory/all_firmware.tar.gz" ||
+    fail "the boot status rebuilds, keeps and loads nothing, and leaves the ESP alone (agreed: $agreed)" "$(key_copies)"
 done
-neo
-mkdir -p "$fixture/esp/vendorfw/touchid" "$fixture/keys"
-cp "$work/key-b" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
-printf old >"$fixture/keys/msrk-j700.bin"
-run touchid-status
-cmp -s "$fixture/keys/msrk-j700.bin" "$work/key-b" && [[ ! -e $fixture/keys/msrk-j700.bin.new ]] || fail 'a newer staged key replaces the one kept'
-neo
-mkdir -p "$fixture/esp/vendorfw/touchid"
-cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
-touch "$fixture/keys"
-run touchid-status 2>/dev/null
-cmp -s "$fixture/esp/vendorfw/touchid/msrk-j700.bin" "$work/key-a" && [[ -f $fixture/keys ]] ||
-  fail "a key that can't be kept on the root stays on the ESP"
-rm "$fixture/keys"
-: >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
-run touchid-status
-[[ -e $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin ]] ||
-  fail 'an empty staged key, an interrupted write, is left where it is'
-cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
-touch "$fixture/run/snapshot-boot"
-run touchid-status
-[[ -s $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin ]] ||
-  fail "a snapshot boot, whose root is lost at the next boot, leaves the staged key on the ESP"
-rm "$fixture/run/snapshot-boot"
-# A key whose envelope doesn't add up to its size is a write the Mac lost: it
-# stays on the ESP, and Touch ID isn't offered on a key that can't work.
-mv "$fixture/extractors/extract-sensor-root-key" "$fixture/extractors/away"
-for damage in truncated extended zeroed relabelled reshaped; do
-  case $damage in
-    truncated) head -c -1 "$work/key-a" ;;
-    extended) cat "$work/key-a"; printf k ;;
-    zeroed) head -c 512 /dev/zero; tail -c +513 "$work/key-a" ;;
-    relabelled) sed 's/comb/bmoc/' "$work/key-a" ;;
-    reshaped) { printf '\x16\x04comb'; der 30 "$work/der/fdrd"; } >"$work/der/two"; der 30 "$work/der/two" ;;
-  esac >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
-  run touchid-status 2>"$fixture/err"
-  [[ -s $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin &&
-    $(<"$fixture/run/touchid") == "unsupported:no-root-key" ]] && grep -q 'damaged' "$fixture/err" ||
-    fail "a $damage sensor key stays on the ESP and isn't offered" "$(<"$fixture/err"); $(<"$fixture/run/touchid")"
-done
-mv "$fixture/extractors/away" "$fixture/extractors/extract-sensor-root-key"
-cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
-printf partial >"$fixture/esp/vendorfw/touchid/msrk-j700.bin.new"
-run touchid-status
-[[ ! -e $fixture/esp/vendorfw/touchid/msrk-j700.bin.new && ! -e $fixture/esp/vendorfw/touchid ]] && cmp -s "$fixture/keys/msrk-j700.bin" "$work/key-a" ||
-  fail "an interrupted write's temporary copy is removed from the ESP"
 pass 'the boot status records available or why not, and never turns Touch ID on'
 
 # Turning it on: carve what is missing, record the agreement, load now, and
@@ -237,23 +242,93 @@ grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1' "$fixture/options
 [[ $(<"$fixture/calls") == $'calibration\nmodprobe apple-sep\nsystemctl start omarchy-mac-touchid-activate.service\nsystemctl try-restart fprintd.service' ]] ||
   fail 'it carves, loads the driver, waits for the activation, then restarts a running fprintd' "$(<"$fixture/calls")"
 [[ $out == *"Touch ID is on."* ]] || fail 'it says so' "$out"
+# A Neo's sensor key is rebuilt only now, from its factory records on the ESP,
+# byte for byte, root-only, and nowhere else.
 neo
-run touchid-enable >/dev/null 2>&1 || fail 'a Neo turns on'
-[[ $(stat -c %a "$fixture/firmware/updates/apple/msrk-j700.bin") == 600 ]] || fail "the Neo's root key is root-only"
-grep -Fxq root-key "$fixture/calls" || fail 'without a staged key the Neo uses the extractor'
-neo
-mkdir -p "$fixture/keys"
-printf staged >"$fixture/keys/msrk-j700.bin"
-run touchid-enable >/dev/null 2>&1 || fail "a Neo turns on with its installer's key"
-[[ $(<"$fixture/firmware/updates/apple/msrk-j700.bin") == staged && $(stat -c %a "$fixture/firmware/updates/apple/msrk-j700.bin") == 600 ]] &&
-  ! grep -Fxq root-key "$fixture/calls" && [[ -f $fixture/keys/msrk-j700.bin ]] ||
-  fail "the installer's key is installed root-only, without the extractor, and the staged copy stays" "$(<"$fixture/calls")"
-neo
-printf '#!/bin/sh\nprintf partial >"$2"\nexit 1\n' >"$fixture/extractors/extract-sensor-root-key"
-! run touchid-enable >/dev/null 2>&1 && [[ ! -e $fixture/firmware/updates/apple/msrk-j700.bin && ! -e $fixture/firmware/updates/apple/msrk-j700.bin.new ]] ||
-  fail 'a sensor key read only partly is never installed under its name'
-printf '#!/bin/sh\necho root-key >>"%s"\nprintf key >"$2"\n' "$fixture/calls" >"$fixture/extractors/extract-sensor-root-key"
+installed_key=$fixture/firmware/updates/apple/msrk-j700.bin
+out=$(run touchid-enable 2>&1) || fail 'a Neo turns on' "$out"
+cmp -s "$installed_key" "$work/factory/key.bin" && [[ $(stat -c %a "$installed_key") == 600 && -z $(key_copies "$installed_key") ]] ||
+  fail "the Neo's sensor key is rebuilt from its factory records, root-only, with no other copy" "$(key_copies)"
 ! grep -Fxq calibration "$fixture/calls" || fail "the Neo's sealed calibration is kept, never carved again"
+neo
+cp "$work/factory/key.bin" "$fixture/firmware/vendor/apple/msrk-j700.bin"
+rm "$fixture/esp/asahi/all_firmware.tar.gz"
+run touchid-enable >/dev/null 2>&1 && [[ -z $(key_copies "$fixture/firmware/vendor/apple/msrk-j700.bin") ]] ||
+  fail 'a Neo with an installed sensor key turns on without rebuilding it'
+# Records another Mac's, or swapped on the ESP, or that can't be told apart,
+# give no key, and nothing turns on.
+for case in other-container two-seals other-chip truncated; do
+  neo
+  case $case in
+    two-seals | other-chip) cp "$work/factory/$case.tar.gz" "$fixture/esp/asahi/all_firmware.tar.gz" ;;
+    truncated) head -c "$(($(stat -c %s "$work/factory/all_firmware.tar.gz") / 2))" "$work/factory/all_firmware.tar.gz" >"$fixture/esp/asahi/all_firmware.tar.gz" ;;
+  esac
+  [[ $case == other-container ]] && container=$work/factory/other-isc.img
+  ! out=$(run touchid-enable 2>&1) && [[ $out == *"sensor key could not be read"* && -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] &&
+    ! grep -q modprobe "$fixture/calls" || fail "a Neo whose factory records are $case gets no key, and nothing turns on" "$out; $(key_copies)"
+  unset container
+done
+grep -q "not all in this Mac's iBoot System Container" <<<"$(container=$work/factory/other-isc.img; neo; run touchid-enable 2>&1)" ||
+  fail "records not all in this Mac's iBoot System Container are said to be another Mac's"
+for refusal in "current-differs:differs from the named trust bundle" "misnamed-trust:does not match its name" \
+  "wrong-payload:not a whole sensor root key" "duplicate:twice" "linked-seal:not a regular file" "oversized:too large" \
+  "no-trust:not all in this Mac's" "no-msrk:not all in this Mac's"; do
+  case=${refusal%%:*}
+  neo
+  if [[ $case == no-trust || $case == no-msrk ]]; then
+    container=$work/factory/$case-isc.img
+  else
+    cp "$work/factory/$case.tar.gz" "$fixture/esp/asahi/all_firmware.tar.gz"
+  fi
+  [[ $case == wrong-payload ]] && container=$work/factory/wrong-payload-isc.img
+  ! out=$(run touchid-enable 2>&1) && [[ $out == *"sensor key could not be read"* && $out == *"${refusal#*:}"* && -z $(key_copies) ]] ||
+    fail "a Neo whose factory records are $case gets no key, and is told why" "$out; $(key_copies)"
+  unset container
+done
+# Only the cache's own MSRk, seal and trust bundle records count; a record
+# straddling the scan's 8 MiB reads is still found.
+for case in decoy unrelated boundary; do
+  neo
+  if [[ $case == boundary ]]; then
+    container=$work/factory/boundary-isc.img
+  else
+    cp "$work/factory/$case.tar.gz" "$fixture/esp/asahi/all_firmware.tar.gz"
+  fi
+  out=$(run touchid-enable 2>&1) && cmp -s "$installed_key" "$work/factory/key.bin" ||
+    fail "a Neo whose factory records are $case still gets its key" "$out"
+  unset container
+done
+# A temporary copy an interrupted run left, readable by anyone, is replaced,
+# never written into.
+neo
+mkdir -p "${installed_key%/*}"
+printf stale >"$installed_key.new"
+chmod 0644 "$installed_key.new"
+# A second name for the stale file shows whether the key was written into it.
+ln "$installed_key.new" "$fixture/stale-link"
+run touchid-enable >/dev/null 2>&1 && cmp -s "$installed_key" "$work/factory/key.bin" &&
+  [[ $(stat -c %a "$installed_key") == 600 && -z $(key_copies "$installed_key") &&
+    $(<"$fixture/stale-link") == stale && $(stat -c %a "$fixture/stale-link") == 644 ]] ||
+  fail "a stale temporary copy is replaced by a root-only key, never written into" "$(key_copies)"
+rm -f "$fixture/stale-link"
+# A key that can't take its name leaves no temporary copy.
+neo
+mkdir -p "$installed_key/in-the-way"
+! run touchid-enable >/dev/null 2>&1 && [[ -z $(key_copies "$installed_key") && -d $installed_key/in-the-way ]] ||
+  fail "a key that can't be installed leaves nothing behind" "$(key_copies)"
+# A yes that fails later takes back the key it rebuilt, with the agreement.
+neo
+touch "$fixture/modprobe-fails"
+! run touchid-enable >/dev/null 2>&1 && [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] ||
+  fail "a Touch ID that fails to turn on keeps no sensor key it rebuilt" "$(key_copies)"
+rm "$fixture/modprobe-fails"
+neo
+mkdir -p "${installed_key%/*}"
+cp "$work/factory/key.bin" "$installed_key"
+touch "$fixture/modprobe-fails"
+! run touchid-enable >/dev/null 2>&1 && cmp -s "$installed_key" "$work/factory/key.bin" ||
+  fail "a failure leaves a sensor key this run didn't rebuild"
+rm "$fixture/modprobe-fails"
 machine apple,j414c apple,t6021 apple,arm-platform
 echo not-ready >"$fixture/activation"
 ! out=$(run touchid-enable 2>&1) && [[ $out == *"did not become ready (not-ready)"* ]] && ! grep -q try-restart "$fixture/calls" ||
@@ -340,7 +415,7 @@ for name in enable-fingerprint disable-fingerprint; do
   sed -e "s|/run/omarchy-mac/touchid|$fixture/run/touchid|g" -e "s|/var/lib/aurora-sep-keybag.bin|$fixture/keybag|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-enable|$fixture/bin/enable-stub|g" -e "s|/etc/omarchy-mac/touchid-on|$fixture/etc/touchid-on|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-eligibility|$fixture/bin/eligibility-stub|g" \
-    -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" -e "s|/var/lib/omarchy-mac/|$fixture/keys/|g" \
+    -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" -e "s|/usr/lib/firmware/updates/|$fixture/firmware/updates/|g" \
     -e "s|/proc/device-tree/compatible|$tree/compatible|g" "$ROOT/entrypoints/$name" >"$entry/$name"
   chmod +x "$entry/$name"
 done
@@ -364,21 +439,16 @@ grep -q 'creates a key store' "$fixture/out" && grep -q 'anti-replay state' "$fi
   grep -q 'DFU' "$fixture/out" && grep -q 'With FileVault off' "$fixture/out" &&
   grep -q 'up anything on macOS you still need' "$fixture/out" && grep -q 'The key store stays' "$fixture/out" ||
   fail 'the owner is told about the shared state, the worst case for each FileVault setting and what stays' "$(<"$fixture/out")"
-! grep -qE 'sensor key|earlier Touch ID setup' "$fixture/out" ||
+! grep -qE "sensor's key|earlier Touch ID setup" "$fixture/out" ||
   fail "a Mac that isn't a Neo, with no key store yet, is told nothing that applies only to others" "$(<"$fixture/out")"
 ask available y && grep -Fxq enable "$fixture/calls" || fail 'an owner who says yes turns Touch ID on'
 neo
 touch "$fixture/keybag"
-! ask available n && grep -q "sensor key, readable by root only" "$fixture/out" &&
+! ask available n && grep -q "reads the sensor's key from the factory records" "$fixture/out" &&
+  grep -q 'only root can' "$fixture/out" && grep -q 'Turning Touch ID off deletes that file' "$fixture/out" &&
   grep -q 'earlier Touch ID setup created' "$fixture/out" && ! grep -q 'creates a key store' "$fixture/out" ||
   fail 'a Neo with a key store is told what applies to it' "$(<"$fixture/out")"
-! grep -q 'is kept for Linux' "$fixture/out" || fail "a Neo without a kept key isn't told one is kept"
-mkdir -p "$fixture/keys"
-printf staged >"$fixture/keys/msrk-j700.bin"
-! ask available n && grep -q "A copy of this Mac's sensor key is kept for Linux" "$fixture/out" &&
-  grep -q 'It stays even if you say no' "$fixture/out" && ! grep -q 'Linux also keeps a copy' "$fixture/out" &&
-  [[ -f $fixture/keys/msrk-j700.bin ]] ||
-  fail "a Neo with its installer's key is told it is kept, and saying no leaves it" "$(<"$fixture/out")"
+[[ -z $(key_copies) ]] || fail "a Neo whose owner says no has no copy of its sensor key" "$(key_copies)"
 awk 'length > 80 { exit 1 }' "$fixture/out" || fail 'the prompt fits in 80 columns' "$(<"$fixture/out")"
 machine apple,j414c apple,t6021 apple,arm-platform
 mkdir -p "$fixture/etc"
@@ -428,6 +498,18 @@ touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf ]] &&
   grep -q 'key store for Linux stays' "$fixture/out" || fail "turning it off removes the owner's agreement and says the key store stays"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 || fail 'turning it off twice is fine'
+# A Neo's sensor key goes too, since turning Touch ID on again rebuilds it.
+mkdir -p "$fixture/firmware/updates/apple" "$fixture/etc"
+cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"
+touch "$fixture/etc/touchid-on"
+PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] ||
+  fail "turning it off deletes a Neo's sensor key" "$(key_copies)"
+cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"
+PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z $(key_copies) ]] ||
+  fail "turning it off deletes a sensor key left by an earlier one" "$(key_copies)"
+printf partial >"$fixture/firmware/updates/apple/msrk-j700.bin.new"
+PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z $(key_copies) ]] ||
+  fail "turning it off deletes an interrupted rebuild's temporary copy" "$(key_copies)"
 mkdir -p "$fixture/etc/touchid-on/in-the-way"
 ! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && grep -q 'could not be turned off' "$fixture/out" &&
   ! grep -q 'stops loading' "$fixture/out" ||
