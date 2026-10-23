@@ -6,7 +6,30 @@
 status_file=${OMARCHY_MAC_TOUCHID_STATUS:-/run/omarchy-mac/touchid}
 agreed=${OMARCHY_MAC_TOUCHID_AGREED:-/etc/omarchy-mac/touchid-on}
 helpers=${OMARCHY_MAC_TOUCHID_HELPERS:-/usr/lib/omarchy-mac}
+esp=${OMARCHY_MAC_TOUCHID_ESP:-/boot/efi}
+keys=${OMARCHY_MAC_TOUCHID_KEYS:-/var/lib/omarchy-mac}
+snapshot_boot=${OMARCHY_MAC_SNAPSHOT_MARKER:-/run/omarchy-snapshot-boot}
 omarchy-hw-apple-silicon || exit 0
+
+# The installer stages the Neo's sensor key on the ESP, outside the firmware
+# archives. It moves here, root-only, and touchid-enable installs it only once
+# the owner agrees; it stays if they say no or turn Touch ID off.
+# The installer that stages it makes images that mount the ESP at /boot/efi.
+# The ESP copy goes only once the root's copy is on disk, so a crash right after
+# the move can't lose both. An empty file is an interrupted write and stays,
+# and so does every file on a snapshot boot, whose root is a tmpfs overlay.
+staged=$esp/vendorfw/touchid/msrk-j700.bin
+if [[ -s $staged && ! -e $snapshot_boot ]]; then
+  if install -d -m 0700 "$keys" && (umask 077 && cp "$staged" "$keys/msrk-j700.bin.new") &&
+    chmod 0600 "$keys/msrk-j700.bin.new" && sync "$keys/msrk-j700.bin.new" &&
+    mv -f "$keys/msrk-j700.bin.new" "$keys/msrk-j700.bin" && sync "$keys"; then
+    rm -f "$staged"
+    rmdir "${staged%/*}" 2>/dev/null
+  else
+    rm -f "$keys/msrk-j700.bin.new" 2>/dev/null
+    echo "The sensor key the installer staged could not be moved off the ESP" >&2
+  fi
+fi
 
 # Turned on: omarchy-mac-touchid-load.service loads the driver, and the
 # activation records the status.

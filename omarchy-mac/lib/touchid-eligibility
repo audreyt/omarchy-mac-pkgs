@@ -7,6 +7,7 @@ tree=${OMARCHY_MAC_TOUCHID_TREE:-/proc/device-tree}
 firmware=${OMARCHY_MAC_TOUCHID_FIRMWARE:-/usr/lib/firmware}
 extractors=${OMARCHY_MAC_TOUCHID_EXTRACTORS:-/usr/lib/linux-aurora}
 python=${OMARCHY_MAC_TOUCHID_PYTHON:-python3}
+keys=${OMARCHY_MAC_TOUCHID_KEYS:-/var/lib/omarchy-mac}
 omarchy-hw-apple-silicon || exit 0
 
 compatible() {
@@ -71,7 +72,10 @@ if ! installed "$calibration" && { compatible apple,t8140 || ! can_extract extra
   echo unsupported:no-calibration
   exit 0
 fi
-if compatible apple,t8140 && ! installed apple/msrk-j700.bin && ! can_extract extract-sensor-root-key; then
+# The Neo's sensor key comes from its installer, which touchid-status moved
+# off the ESP, or from the extractor.
+if compatible apple,t8140 && ! installed apple/msrk-j700.bin && [[ ! -s $keys/msrk-j700.bin ]] &&
+  ! can_extract extract-sensor-root-key; then
   echo unsupported:no-root-key
   exit 0
 fi

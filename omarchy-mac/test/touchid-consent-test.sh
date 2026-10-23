@@ -46,7 +46,8 @@ chmod +x "$fixture/bin/"* "$fixture/extractors/"*
 
 # A device tree: the machine's compatible list, a sensor node, and the identity.
 machine() {
-  rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook" "$fixture/options-at-load" "$fixture/module"
+  rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook" "$fixture/options-at-load" "$fixture/module" \
+    "$fixture/esp" "$fixture/keys"
   mkdir -p "$tree/soc/spi@39b108000/fingerprint@0" "$tree/chosen" "$fixture/firmware" "$fixture/run"
   printf '%s\0' "$@" >"$tree/compatible"
   printf 'apple,mesa-fingerprint\0' >"$tree/soc/spi@39b108000/fingerprint@0/compatible"
@@ -66,6 +67,7 @@ run() {
     OMARCHY_MAC_TOUCHID_OPTIONS=$fixture/etc/modprobe.conf OMARCHY_MAC_TOUCHID_MODULE=$fixture/module \
     OMARCHY_MAC_TOUCHID_STATUS=$fixture/run/touchid OMARCHY_MAC_TOUCHID_HELPERS=$ROOT/lib \
     OMARCHY_MAC_TOUCHID_NODE=$fixture/sep-bio OMARCHY_MAC_TOUCHID_KEYBAG=$fixture/keybag \
+    OMARCHY_MAC_TOUCHID_ESP=$fixture/esp OMARCHY_MAC_TOUCHID_KEYS=$fixture/keys OMARCHY_MAC_SNAPSHOT_MARKER=$fixture/run/snapshot-boot \
     OMARCHY_MAC_TOUCHID_PYTHON=${python:-sh} "$ROOT/lib/$1" "${@:2}"
 }
 eligibility() {
@@ -98,6 +100,9 @@ neo
 [[ $(eligibility) == "available" ]] || fail "a Neo with its installer's calibration and a root-key extractor is available"
 mv "$fixture/extractors/extract-sensor-root-key" "$fixture/extractors/away"
 [[ $(eligibility) == "unsupported:no-root-key" ]] || fail 'a Neo without its root key or a way to rebuild it is unsupported'
+mkdir -p "$fixture/keys"
+printf staged >"$fixture/keys/msrk-j700.bin"
+[[ $(eligibility) == "available" ]] || fail "a Neo whose installer staged its sensor key needs no extractor"
 mv "$fixture/extractors/away" "$fixture/extractors/extract-sensor-root-key"
 pass 'only a Mac whose setup can finish is available'
 
@@ -127,6 +132,48 @@ mkdir -p "$fixture/etc"
 touch "$fixture/etc/touchid-on"
 run touchid-status
 [[ ! -e $fixture/run/touchid && ! -s $fixture/calls ]] || fail 'once Touch ID is on, the activation records the status'
+# The installer stages the Neo's sensor key on the ESP; the status moves it to
+# a root-only place on the root, whether or not Touch ID is on.
+for agreed in no yes; do
+  neo
+  mv "$fixture/extractors/extract-sensor-root-key" "$fixture/extractors/away"
+  mkdir -p "$fixture/esp/vendorfw/touchid" "$fixture/etc"
+  printf staged >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+  # vfat mounted umask=0077 shows its files as 0700, and cp keeps that.
+  chmod 0700 "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+  [[ $agreed == no ]] || touch "$fixture/etc/touchid-on"
+  run touchid-status
+  [[ $(<"$fixture/keys/msrk-j700.bin") == staged && $(stat -c %a "$fixture/keys/msrk-j700.bin") == 600 &&
+    $(stat -c %a "$fixture/keys") == 700 && ! -e $fixture/esp/vendorfw/touchid && -d $fixture/esp/vendorfw ]] ||
+    fail "the installer's sensor key moves off the ESP to a root-only file (agreed: $agreed)" "$(ls -lR "$fixture/esp" "$fixture/keys" 2>&1)"
+  [[ $agreed == yes || $(<"$fixture/run/touchid") == "available" ]] || fail 'a Neo with its staged key and no extractor is available'
+  [[ ! -e $fixture/firmware/updates/apple/msrk-j700.bin && ! -s $fixture/calls ]] || fail 'moving the key installs and loads nothing'
+  mv "$fixture/extractors/away" "$fixture/extractors/extract-sensor-root-key"
+done
+neo
+mkdir -p "$fixture/esp/vendorfw/touchid" "$fixture/keys"
+printf new >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+printf old >"$fixture/keys/msrk-j700.bin"
+run touchid-status
+[[ $(<"$fixture/keys/msrk-j700.bin") == new && ! -e $fixture/keys/msrk-j700.bin.new ]] || fail 'a newer staged key replaces the one kept'
+neo
+mkdir -p "$fixture/esp/vendorfw/touchid"
+printf staged >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+touch "$fixture/keys"
+run touchid-status 2>/dev/null
+[[ -f $fixture/esp/vendorfw/touchid/msrk-j700.bin && $(<"$fixture/esp/vendorfw/touchid/msrk-j700.bin") == staged && -f $fixture/keys ]] ||
+  fail "a key that can't be kept on the root stays on the ESP"
+rm "$fixture/keys"
+: >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+run touchid-status
+[[ -e $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin ]] ||
+  fail 'an empty staged key, an interrupted write, is left where it is'
+printf staged >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+touch "$fixture/run/snapshot-boot"
+run touchid-status
+[[ -s $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin ]] ||
+  fail "a snapshot boot, whose root is lost at the next boot, leaves the staged key on the ESP"
+rm "$fixture/run/snapshot-boot"
 pass 'the boot status records available or why not, and never turns Touch ID on'
 
 # Turning it on: carve what is missing, record the agreement, load now, and
@@ -146,6 +193,19 @@ grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1' "$fixture/options
 neo
 run touchid-enable >/dev/null 2>&1 || fail 'a Neo turns on'
 [[ $(stat -c %a "$fixture/firmware/updates/apple/msrk-j700.bin") == 600 ]] || fail "the Neo's root key is root-only"
+grep -Fxq root-key "$fixture/calls" || fail 'without a staged key the Neo uses the extractor'
+neo
+mkdir -p "$fixture/keys"
+printf staged >"$fixture/keys/msrk-j700.bin"
+run touchid-enable >/dev/null 2>&1 || fail "a Neo turns on with its installer's key"
+[[ $(<"$fixture/firmware/updates/apple/msrk-j700.bin") == staged && $(stat -c %a "$fixture/firmware/updates/apple/msrk-j700.bin") == 600 ]] &&
+  ! grep -Fxq root-key "$fixture/calls" && [[ -f $fixture/keys/msrk-j700.bin ]] ||
+  fail "the installer's key is installed root-only, without the extractor, and the staged copy stays" "$(<"$fixture/calls")"
+neo
+printf '#!/bin/sh\nprintf partial >"$2"\nexit 1\n' >"$fixture/extractors/extract-sensor-root-key"
+! run touchid-enable >/dev/null 2>&1 && [[ ! -e $fixture/firmware/updates/apple/msrk-j700.bin && ! -e $fixture/firmware/updates/apple/msrk-j700.bin.new ]] ||
+  fail 'a sensor key read only partly is never installed under its name'
+printf '#!/bin/sh\necho root-key >>"%s"\nprintf key >"$2"\n' "$fixture/calls" >"$fixture/extractors/extract-sensor-root-key"
 ! grep -Fxq calibration "$fixture/calls" || fail "the Neo's sealed calibration is kept, never carved again"
 machine apple,j414c apple,t6021 apple,arm-platform
 echo not-ready >"$fixture/activation"
@@ -208,7 +268,7 @@ mkdir -p "$entry"
 for name in enable-fingerprint disable-fingerprint; do
   sed -e "s|/run/omarchy-mac/touchid|$fixture/run/touchid|g" -e "s|/var/lib/aurora-sep-keybag.bin|$fixture/keybag|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-enable|$fixture/bin/enable-stub|g" -e "s|/etc/omarchy-mac/touchid-on|$fixture/etc/touchid-on|g" \
-    -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" \
+    -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" -e "s|/var/lib/omarchy-mac/|$fixture/keys/|g" \
     -e "s|/proc/device-tree/compatible|$tree/compatible|g" "$ROOT/entrypoints/$name" >"$entry/$name"
   chmod +x "$entry/$name"
 done
@@ -239,6 +299,14 @@ touch "$fixture/keybag"
 ! ask available n && grep -q "sensor key, readable by root only" "$fixture/out" &&
   grep -q 'earlier Touch ID setup created' "$fixture/out" && ! grep -q 'creates a key store' "$fixture/out" ||
   fail 'a Neo with a key store is told what applies to it' "$(<"$fixture/out")"
+! grep -q 'The installer kept' "$fixture/out" || fail "a Neo without the installer's key isn't told the installer kept one"
+mkdir -p "$fixture/keys"
+printf staged >"$fixture/keys/msrk-j700.bin"
+! ask available n && grep -q "The installer kept a copy of this Mac's sensor key" "$fixture/out" &&
+  grep -q 'It stays even if you say no' "$fixture/out" && ! grep -q 'Linux also keeps a copy' "$fixture/out" &&
+  [[ -f $fixture/keys/msrk-j700.bin ]] ||
+  fail "a Neo with its installer's key is told it is kept, and saying no leaves it" "$(<"$fixture/out")"
+awk 'length > 80 { exit 1 }' "$fixture/out" || fail 'the prompt fits in 80 columns' "$(<"$fixture/out")"
 machine apple,j414c apple,t6021 apple,arm-platform
 mkdir -p "$fixture/etc"
 touch "$fixture/etc/touchid-on"

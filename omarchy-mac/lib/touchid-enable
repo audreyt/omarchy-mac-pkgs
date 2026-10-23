@@ -1,6 +1,6 @@
 #!/bin/bash
 # Turns Touch ID on once the owner has agreed: carves this Mac's calibration
-# (and on the Neo its sensor root key) if they are missing, records the
+# (and on the Neo installs its sensor root key) if they are missing, records the
 # agreement so the driver loads at every boot, and loads it now.
 
 tree=${OMARCHY_MAC_TOUCHID_TREE:-/proc/device-tree}
@@ -16,6 +16,7 @@ loaded=${status_file%/*}/touchid-loaded
 helpers=${OMARCHY_MAC_TOUCHID_HELPERS:-/usr/lib/omarchy-mac}
 node_path=${OMARCHY_MAC_TOUCHID_NODE:-/dev/sep-bio}
 keybag=${OMARCHY_MAC_TOUCHID_KEYBAG:-/var/lib/aurora-sep-keybag.bin}
+keys=${OMARCHY_MAC_TOUCHID_KEYS:-/var/lib/omarchy-mac}
 omarchy-hw-apple-silicon || exit 0
 
 # Once this run records the agreement, a failure takes it back, so a Touch ID
@@ -59,9 +60,17 @@ fi
 if tr '\0' '\n' <"$tree/compatible" | grep -Fxq apple,t8140 && ! installed apple/msrk-j700.bin; then
   echo "Copying this Mac's Touch ID sensor key..."
   mkdir -p -m 0755 "$firmware/updates/apple"
-  (umask 077 && "$extractors/extract-sensor-root-key" -o "$firmware/updates/apple/msrk-j700.bin" >/dev/null) ||
-    fail "this Mac's sensor key could not be read"
-  chmod 0600 "$firmware/updates/apple/msrk-j700.bin"
+  # The installer's copy, which touchid-status moved off the ESP, stays where
+  # it is, so turning Touch ID off and on again needs no reinstall. A partial
+  # copy never takes the key's name.
+  key=$firmware/updates/apple/msrk-j700.bin
+  if [[ -s $keys/msrk-j700.bin ]]; then
+    (umask 077 && cp "$keys/msrk-j700.bin" "$key.new") || { rm -f "$key.new"; fail "this Mac's sensor key could not be copied"; }
+  else
+    (umask 077 && "$extractors/extract-sensor-root-key" -o "$key.new" >/dev/null) ||
+      { rm -f "$key.new"; fail "this Mac's sensor key could not be read"; }
+  fi
+  chmod 0600 "$key.new" && mv -f "$key.new" "$key" || { rm -f "$key.new"; fail "this Mac's sensor key could not be installed"; }
 fi
 
 # The record is the agreement: omarchy-mac-touchid-load.service loads the
