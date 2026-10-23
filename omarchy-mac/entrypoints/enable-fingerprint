@@ -42,6 +42,10 @@ case $status in
   *)
     echo "Touch ID can't be used on this Mac yet ($status), so setup goes on with"
     echo "any other fingerprint reader."
+    # A driver that came up wrong this boot stays so until a restart.
+    case $status in
+      failed | not-ready | unproven | blocked) echo "Restart this Mac, then set up the fingerprint again to retry Touch ID." ;;
+    esac
     exit 0
     ;;
 esac

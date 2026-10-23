@@ -13,6 +13,13 @@ omarchy-hw-apple-silicon || exit 0
 if [[ -e $agreed ]]; then
   exit 0
 fi
+# A driver touchid-enable loaded this boot that never came up stays so until a
+# restart, so the reason it recorded stands, even when an update runs this again.
+if [[ -e ${status_file%/*}/touchid-loaded ]]; then
+  case $(cat "$status_file" 2>/dev/null) in
+    failed | not-ready | unproven | blocked) exit 0 ;;
+  esac
+fi
 eligibility=$("$helpers/touchid-eligibility")
 if [[ $eligibility == "none" ]]; then
   exit 0

@@ -120,11 +120,25 @@ if [[ $(cat "$status_file" 2>/dev/null) == "ready" ]]; then
   # allowance for its node, so it starts again with both.
   systemctl try-restart fprintd.service 2>/dev/null
   echo "Touch ID is on."
+  exit 0
 elif (( preloaded )); then
   # It was loaded before it could be told to write, so the agreement stands and
   # takes effect when it loads again.
   echo "Touch ID turns on when this Mac restarts: its driver was already running without permission to write. Restart, then set up the fingerprint again." >&2
   exit 1
-else
-  fail "it did not become ready ($(cat "$status_file" 2>/dev/null || echo unknown)); see journalctl -u omarchy-mac-touchid-activate. The driver stays loaded until this Mac restarts; restart before trying again"
 fi
+# A driver that came up wrong stays so until a restart: the status says it failed.
+# Without the node or keybag the activation never ran; only the kernel log says why.
+missing=""
+[[ -e $node_path ]] || missing="$node_path"
+[[ -e $keybag ]] || missing="${missing:+$missing and }$keybag"
+reason=$(cat "$status_file" 2>/dev/null)
+if [[ -n $missing || -z $reason || $reason == "available" ]]; then
+  mkdir -p -m 0755 "${status_file%/*}" && printf '%s\n' failed >"$status_file.new" &&
+    chmod 0644 "$status_file.new" && mv -f "$status_file.new" "$status_file"
+fi
+if [[ -n $missing ]]; then
+  fail "the Secure Enclave driver loaded but $missing never appeared; see journalctl -k for apple_sep. The driver stays loaded until this Mac restarts; restart before trying again"
+fi
+[[ -n $reason && $reason != "available" ]] || reason="the activation recorded nothing"
+fail "it did not become ready ($reason); see journalctl -u omarchy-mac-touchid-activate. The driver stays loaded until this Mac restarts; restart before trying again"

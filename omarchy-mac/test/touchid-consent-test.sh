@@ -35,9 +35,10 @@ tree=$fixture/tree
 mkdir -p "$fixture/bin" "$fixture/extractors"
 printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/omarchy-hw-apple-silicon"
 # The stub keeps the driver options it was loaded with, as modprobe reads them.
-printf '#!/bin/sh\necho modprobe "$@" >>"%s"\ncp "%s" "%s" 2>/dev/null\n[ -e "%s" ] && exit 1\nmkdir -p "%s"\ntouch "%s" "%s"\n' \
+# With no-node or no-keybag, the driver loads but that never appears.
+printf '#!/bin/sh\necho modprobe "$@" >>"%s"\ncp "%s" "%s" 2>/dev/null\n[ -e "%s" ] && exit 1\nmkdir -p "%s"\n[ -e "%s" ] || touch "%s"\n[ -e "%s" ] || touch "%s"\n' \
   "$fixture/calls" "$fixture/etc/modprobe.conf" "$fixture/options-at-load" "$fixture/modprobe-fails" \
-  "$fixture/module" "$fixture/sep-bio" "$fixture/keybag" >"$fixture/bin/modprobe"
+  "$fixture/module" "$fixture/no-node" "$fixture/sep-bio" "$fixture/no-keybag" "$fixture/keybag" >"$fixture/bin/modprobe"
 printf '#!/bin/sh\necho systemctl "$@" >>"%s"\n[ "$1" = start ] && printf "%%s\\n" "$(cat "%s")" >"%s"\nexit 0\n' \
   "$fixture/calls" "$fixture/activation" "$fixture/run/touchid" >"$fixture/bin/systemctl"
 printf '#!/bin/sh\n[ -e "%s" ] || echo /usr/lib/omarchy/mac/enable-fingerprint\n' "$fixture/no-hook" >"$fixture/bin/omarchy-lifecycle-dispatch"
@@ -127,7 +128,7 @@ key_copies() {
 
 # A device tree: the machine's compatible list, a sensor node, and the identity.
 machine() {
-  rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook" "$fixture/options-at-load" "$fixture/module" \
+  rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook" "$fixture/no-node" "$fixture/no-keybag" "$fixture/options-at-load" "$fixture/module" \
     "$fixture/esp"
   mkdir -p "$tree/soc/spi@39b108000/fingerprint@0" "$tree/chosen" "$fixture/firmware" "$fixture/run"
   printf '%s\0' "$@" >"$tree/compatible"
@@ -335,9 +336,47 @@ printf '#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\nprintf key >"$2"\nexit 
 chmod +x "$fixture/bin/late-failing-python"
 ! python=$fixture/bin/late-failing-python run touchid-enable >/dev/null 2>&1 && [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] ||
   fail "a key the extractor installed before failing is taken back" "$(key_copies)"
+# A driver whose node never appears: the activation never ran, so the status
+# says it failed and the owner is pointed at the kernel log.
+machine apple,j414c apple,t6021 apple,arm-platform
+touch "$fixture/no-node"
+# The activation never runs without the node, so the status stays the boot's.
+echo available >"$fixture/activation"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"never appeared"* && $out == *"journalctl -k"* && $out != *"omarchy-mac-touchid-activate"* ]] &&
+  [[ $(<"$fixture/run/touchid") == failed && $(stat -c %a "$fixture/run/touchid") == 644 && ! -e $fixture/etc/touchid-on ]] ||
+  fail "a node that never appears records failed, takes the agreement back and points at the kernel log" "$out; $(cat "$fixture/run/touchid" 2>&1)"
+# An update in the same boot runs the status again: the failure stands until a
+# restart, whose fresh /run offers Touch ID again.
+run touchid-status
+[[ $(<"$fixture/run/touchid") == failed ]] || fail "an update in the same boot keeps the failure" "$(<"$fixture/run/touchid")"
+rm -f "$fixture/run/touchid-loaded"
+run touchid-status
+[[ $(<"$fixture/run/touchid") == available ]] || fail "the next boot offers Touch ID again" "$(<"$fixture/run/touchid")"
+# Only a reason a failed bring-up recorded stands: the status's own results, and
+# a ready that Touch ID being turned off this boot left, are worked out again.
+touch "$fixture/run/touchid-loaded"
+for kept in ready unsupported:runtime; do
+  echo "$kept" >"$fixture/run/touchid"
+  run touchid-status
+  [[ $(<"$fixture/run/touchid") == available ]] || fail "a status of $kept from earlier this boot is worked out again" "$(<"$fixture/run/touchid")"
+done
+rm -f "$fixture/run/touchid-loaded"
+rm "$fixture/no-node"
+machine apple,j414c apple,t6021 apple,arm-platform
+touch "$fixture/no-keybag"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"$fixture/keybag never appeared"* && $out == *"journalctl -k"* ]] &&
+  [[ $(<"$fixture/run/touchid") == failed ]] ||
+  fail "a keybag that never appears records failed and points at the kernel log" "$out"
+rm "$fixture/no-keybag"
+# The node and keybag appeared but the activation recorded nothing.
+machine apple,j414c apple,t6021 apple,arm-platform
+echo available >"$fixture/activation"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"the activation recorded nothing"* && $(<"$fixture/run/touchid") == failed ]] ||
+  fail "an activation that recorded nothing leaves failed and says so" "$out; $(cat "$fixture/run/touchid" 2>&1)"
 machine apple,j414c apple,t6021 apple,arm-platform
 echo not-ready >"$fixture/activation"
-! out=$(run touchid-enable 2>&1) && [[ $out == *"did not become ready (not-ready)"* ]] && ! grep -q try-restart "$fixture/calls" ||
+! out=$(run touchid-enable 2>&1) && [[ $out == *"did not become ready (not-ready)"* && $(<"$fixture/run/touchid") == not-ready ]] &&
+  ! grep -q try-restart "$fixture/calls" ||
   fail 'an activation that does not reach ready fails, says what it read, and leaves fprintd alone' "$out"
 [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf && $out == *"restart before trying again"* ]] ||
   fail 'a Touch ID that never became ready takes the agreement back, so it does not load at every boot' "$out"
@@ -472,7 +511,10 @@ rm "$fixture/etc/touchid-on"
 ! ask ready n && grep -q 'With FileVault on' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
   fail 'a Touch ID turned off earlier this boot asks again before turning back on'
 # Where Touch ID can't be set up, the setup goes on, so a USB reader enrols.
+ask failed '' && grep -q 'Restart this Mac' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
+  fail 'a Touch ID that failed this boot lets setup go on and says to restart' "$(<"$fixture/out")"
 ask unsupported:board '' && grep -q 'unsupported:board' "$fixture/out" && grep -q 'any other fingerprint reader' "$fixture/out" &&
+  ! grep -q 'Restart this Mac' "$fixture/out" &&
   [[ ! -s $fixture/calls ]] || fail 'an unsupported Mac is told why, turns nothing on, and lets the setup go on' "$(<"$fixture/out")"
 without_status() {
   : >"$fixture/calls"
