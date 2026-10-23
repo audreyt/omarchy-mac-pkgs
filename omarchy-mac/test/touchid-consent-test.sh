@@ -44,6 +44,29 @@ printf '#!/bin/sh\necho calibration >>"%s"\nprintf calibration >"$2"\n' "$fixtur
 printf '#!/bin/sh\necho root-key >>"%s"\nprintf key >"$2"\n' "$fixture/calls" >"$fixture/extractors/extract-sensor-root-key"
 chmod +x "$fixture/bin/"* "$fixture/extractors/"*
 
+# Sensor keys with the Neo's DER envelope, comb { fdrd, secb }, to stage.
+der() {
+  local size
+  size=$(stat -c %s "$2")
+  if (( size < 128 )); then
+    printf "\\x$1\\x$(printf %02x "$size")"
+  else
+    printf "\\x$1\\x82\\x$(printf %02x $((size >> 8)))\\x$(printf %02x $((size & 255)))"
+  fi
+  cat "$2"
+}
+sensor_key() {
+  local part=$work/der
+  mkdir -p "$part"
+  head -c "$2" /dev/zero | tr '\0' k >"$part/payload"
+  { printf '\x16\x04fdrd'; der 04 "$part/payload"; } >"$part/fdrd"
+  { printf '\x16\x04secb'; der 04 "$part/payload"; } >"$part/secb"
+  { printf '\x16\x04comb'; der 30 "$part/fdrd"; der 30 "$part/secb"; } >"$part/comb"
+  der 30 "$part/comb" >"$1"
+}
+sensor_key "$work/key-a" 6000
+sensor_key "$work/key-b" 5000
+
 # A device tree: the machine's compatible list, a sensor node, and the identity.
 machine() {
   rm -rf "$tree" "$fixture/firmware" "$fixture/run" "$fixture/etc" "$fixture/sep-bio" "$fixture/keybag" "$fixture/calls" "$fixture/no-hook" "$fixture/options-at-load" "$fixture/module" \
@@ -138,12 +161,12 @@ for agreed in no yes; do
   neo
   mv "$fixture/extractors/extract-sensor-root-key" "$fixture/extractors/away"
   mkdir -p "$fixture/esp/vendorfw/touchid" "$fixture/etc"
-  printf staged >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+  cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
   # vfat mounted umask=0077 shows its files as 0700, and cp keeps that.
   chmod 0700 "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
   [[ $agreed == no ]] || touch "$fixture/etc/touchid-on"
   run touchid-status
-  [[ $(<"$fixture/keys/msrk-j700.bin") == staged && $(stat -c %a "$fixture/keys/msrk-j700.bin") == 600 &&
+  cmp -s "$fixture/keys/msrk-j700.bin" "$work/key-a" && [[ $(stat -c %a "$fixture/keys/msrk-j700.bin") == 600 &&
     $(stat -c %a "$fixture/keys") == 700 && ! -e $fixture/esp/vendorfw/touchid && -d $fixture/esp/vendorfw ]] ||
     fail "the installer's sensor key moves off the ESP to a root-only file (agreed: $agreed)" "$(ls -lR "$fixture/esp" "$fixture/keys" 2>&1)"
   [[ $agreed == yes || $(<"$fixture/run/touchid") == "available" ]] || fail 'a Neo with its staged key and no extractor is available'
@@ -152,28 +175,50 @@ for agreed in no yes; do
 done
 neo
 mkdir -p "$fixture/esp/vendorfw/touchid" "$fixture/keys"
-printf new >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+cp "$work/key-b" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
 printf old >"$fixture/keys/msrk-j700.bin"
 run touchid-status
-[[ $(<"$fixture/keys/msrk-j700.bin") == new && ! -e $fixture/keys/msrk-j700.bin.new ]] || fail 'a newer staged key replaces the one kept'
+cmp -s "$fixture/keys/msrk-j700.bin" "$work/key-b" && [[ ! -e $fixture/keys/msrk-j700.bin.new ]] || fail 'a newer staged key replaces the one kept'
 neo
 mkdir -p "$fixture/esp/vendorfw/touchid"
-printf staged >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
 touch "$fixture/keys"
 run touchid-status 2>/dev/null
-[[ -f $fixture/esp/vendorfw/touchid/msrk-j700.bin && $(<"$fixture/esp/vendorfw/touchid/msrk-j700.bin") == staged && -f $fixture/keys ]] ||
+cmp -s "$fixture/esp/vendorfw/touchid/msrk-j700.bin" "$work/key-a" && [[ -f $fixture/keys ]] ||
   fail "a key that can't be kept on the root stays on the ESP"
 rm "$fixture/keys"
 : >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
 run touchid-status
 [[ -e $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin ]] ||
   fail 'an empty staged key, an interrupted write, is left where it is'
-printf staged >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
 touch "$fixture/run/snapshot-boot"
 run touchid-status
 [[ -s $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin ]] ||
   fail "a snapshot boot, whose root is lost at the next boot, leaves the staged key on the ESP"
 rm "$fixture/run/snapshot-boot"
+# A key whose envelope doesn't add up to its size is a write the Mac lost: it
+# stays on the ESP, and Touch ID isn't offered on a key that can't work.
+mv "$fixture/extractors/extract-sensor-root-key" "$fixture/extractors/away"
+for damage in truncated extended zeroed relabelled reshaped; do
+  case $damage in
+    truncated) head -c -1 "$work/key-a" ;;
+    extended) cat "$work/key-a"; printf k ;;
+    zeroed) head -c 512 /dev/zero; tail -c +513 "$work/key-a" ;;
+    relabelled) sed 's/comb/bmoc/' "$work/key-a" ;;
+    reshaped) { printf '\x16\x04comb'; der 30 "$work/der/fdrd"; } >"$work/der/two"; der 30 "$work/der/two" ;;
+  esac >"$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+  run touchid-status 2>"$fixture/err"
+  [[ -s $fixture/esp/vendorfw/touchid/msrk-j700.bin && ! -e $fixture/keys/msrk-j700.bin &&
+    $(<"$fixture/run/touchid") == "unsupported:no-root-key" ]] && grep -q 'damaged' "$fixture/err" ||
+    fail "a $damage sensor key stays on the ESP and isn't offered" "$(<"$fixture/err"); $(<"$fixture/run/touchid")"
+done
+mv "$fixture/extractors/away" "$fixture/extractors/extract-sensor-root-key"
+cp "$work/key-a" "$fixture/esp/vendorfw/touchid/msrk-j700.bin"
+printf partial >"$fixture/esp/vendorfw/touchid/msrk-j700.bin.new"
+run touchid-status
+[[ ! -e $fixture/esp/vendorfw/touchid/msrk-j700.bin.new && ! -e $fixture/esp/vendorfw/touchid ]] && cmp -s "$fixture/keys/msrk-j700.bin" "$work/key-a" ||
+  fail "an interrupted write's temporary copy is removed from the ESP"
 pass 'the boot status records available or why not, and never turns Touch ID on'
 
 # Turning it on: carve what is missing, record the agreement, load now, and
