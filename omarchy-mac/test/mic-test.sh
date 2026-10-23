@@ -39,10 +39,12 @@ class Audio:
         self.notices = []; self.feeds = {m.MAPPING}; self.routes = 0; self.route_choice = None
         self.stamp = None; self.restarts = 0; self.link_error = 'link rejected after partial creation'
         self.cards = [dict(name='alsa_card.platform-sound', active_profile='HiFi')]
+        self.dsp_ports = ['capture_AUX0']; self.has_array = True
         # WirePlumber links the DSP's mono port to the remap source's left side
         # this many graph queries after the module loads (None: never).
         self.wireplumber_links = None; self.loaded_at = None; self.queries = 0
     def restart_session_manager(self, reason): self.restarts += 1; return 0
+    def array(self): return self.has_array
     def objects(self, kind):
         if self.fail_query: raise RuntimeError('live Pulse query failed')
         if kind == 'sources':
@@ -60,7 +62,7 @@ class Audio:
                 and self.queries - self.loaded_at >= self.wireplumber_links and not any(input_ == 21 for input_, _ in self.linked.values())):
             self.next_id += 1; self.linked[self.next_id] = (21, None)
         nodes = [dict(id=1, type='PipeWire:Interface:Node', info={'props': {'node.name': DSP}})]
-        ports = [(11, 1, 'capture_AUX0')]
+        ports = [(11 + index, 1, name) for index, name in enumerate(self.dsp_ports)]
         if self.existing:
             nodes.append(dict(id=2, type='PipeWire:Interface:Node', info={'props': {'node.name': m.MAPPING}}))
             nodes.append(dict(id=3, type='PipeWire:Interface:Node', info={'props': {'node.name': m.CAPTURE}}))
@@ -878,6 +880,72 @@ for code in (0, 75, 76, 1):
         args = call.call_args.args[0]
         assert args[:3] == ['systemd-run', '--user', '--wait'] and '--unit=omarchy-audio-repair-%d' % os.getpid() in args, args
         assert args[-5:] == ['omarchy-audio-watchdog', '--repair', 'wireplumber', '--reason', 'links refused'], args
+# asahi-audio ab1b469 names the DSP's mono port MONO instead of AUX0: either
+# one is mapped, but never a DSP that offers both.
+with tempfile.TemporaryDirectory() as temporary:
+    audio = Audio(); audio.dsp_ports = ['capture_MONO']
+    m.reconcile(audio, Path(temporary) / 'mono.json')
+    assert audio.default == m.MAPPING and sorted(input_ for input_, _ in audio.linked.values()) == [21, 22], audio.linked
+    audio = Audio(); audio.dsp_ports = ['capture_AUX0', 'capture_MONO']
+    try: m.reconcile(audio, Path(temporary) / 'both.json')
+    except RuntimeError as error: assert 'must be ready' in str(error), error
+    else: raise AssertionError('a DSP with two mono ports was mapped')
+    assert audio.default == DSP and not audio.existing
+print('ok - the DSP microphone is mapped from its AUX0 or MONO port')
+
+# An update that adds what the DSP graph lacked (triforce-lv2) brings no audio
+# event: once the update ends, a missing DSP with an array present restarts
+# WirePlumber once, through the watchdog, whatever the repair interval.
+with tempfile.TemporaryDirectory() as temporary:
+    directory = Path(temporary)
+    lv2 = directory / 'lv2'; (lv2 / 'lsp-plugins.lv2').mkdir(parents=True)
+    lock = directory / 'db.lck'; pacman = [False]
+    record = directory / 'run/omarchy-asahi-mic.installed'
+    def watcher(): return m.Installed(record, paths=(lv2, directory / 'absent'), lock=lock, running=lambda: pacman[0])
+    watched = watcher()
+    assert record.exists() and not watched.changed() and not m.installed['pending'], 'an unchanged tree is no update'
+    lock.touch(); pacman[0] = True
+    (lv2 / 'triforce.lv2').mkdir()
+    assert not watched.changed() and not m.installed['pending'], 'nothing happens while pacman holds the database'
+    reloaded = watcher()
+    pacman[0] = False
+    assert reloaded.changed() and m.installed['pending'], 'a watcher that reloaded during the update still sees it'
+    assert not reloaded.changed() and not watcher().changed(), 'an update wakes one pass'
+    time.sleep(0.01); os.utime(lv2 / 'lsp-plugins.lv2')
+    assert watcher().changed(), 'a changed plugin bundle counts too'
+    def pass_(audio):
+        try: m.reconcile(audio, directory / 'state.json')
+        except m.Deferred: pass
+    stamp = directory / 'repaired'; stamp.write_text(repr(time.monotonic()))
+    audio = Audio(); audio.no_dsp = True; audio.stamp = stamp
+    m.installed['pending'] = True; pass_(audio)
+    assert audio.restarts == 1 and not m.installed['pending'] and not audio.notices, 'the update restarts WirePlumber once, inside the interval'
+    pass_(audio)
+    assert audio.restarts == 1, 'and only once'
+    audio = Audio(); audio.no_dsp = True; audio.has_array = False
+    m.installed['pending'] = True; pass_(audio)
+    assert audio.restarts == 0 and not m.installed['pending'], 'a Mac without a microphone array is left alone'
+    audio = Audio(); audio.no_dsp = True; audio.cards[0]['active_profile'] = 'off'
+    m.installed['pending'] = True; pass_(audio)
+    assert audio.restarts == 0 and not m.installed['pending'], 'a card the user switched off is left alone'
+    audio = Audio()
+    m.installed['pending'] = True; m.reconcile(audio, directory / 'present.json')
+    assert audio.restarts == 0 and not m.installed['pending'], 'a present DSP needs no restart'
+    class Deferring(Audio):
+        def restart_session_manager(self, reason): self.restarts += 1; return m.DEFERRED
+    audio = Deferring(); audio.no_dsp = True
+    m.installed['pending'] = True; pass_(audio)
+    assert audio.restarts == 1 and m.installed['pending'] and 29 <= m.outage_due() <= 30, 'a deferred restart is asked again in half a minute'
+    m.installed['pending'] = False; m.recheck['at'] = None
+    m.outage.update(since=None, notified=False, repaired=False)
+    # The watcher asks changed() on its poll schedule and runs a full pass.
+    calls = []
+    def changed(): calls.append(1); return len(calls) == 2
+    sub = m.Subscription(command=['sleep', '5'], backstop=60.0, changed=changed, poll=0.1)
+    sub.start(); started = time.monotonic()
+    assert sub.wait() is False and time.monotonic() - started < 2 and len(calls) == 2, 'a changed install wakes a full pass'
+    sub.stop()
+print('ok - an update that changes the audio plugins restarts WirePlumber once when the DSP microphone is missing')
 unit = (root / 'vendor/systemd/user/omarchy-asahi-mic.service').read_text()
 assert '--watch' in unit and 'PartOf=graphical-session.target' in unit
 assert 'PartOf=pipewire.service' not in unit and 'After=graphical-session.target' not in unit
