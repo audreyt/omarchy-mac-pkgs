@@ -47,6 +47,7 @@ class Audio:
         self.wireplumber_links = None; self.loaded_at = None; self.queries = 0
     def restart_session_manager(self, reason): self.restarts += 1; return 0
     def array(self): return self.has_array
+    def updating(self): return getattr(self, 'busy', False)
     def objects(self, kind):
         if self.fail_query: raise RuntimeError('live Pulse query failed')
         if kind == 'sources':
@@ -895,6 +896,9 @@ with tempfile.TemporaryDirectory() as temporary:
     for dsp_ports, capture_ports in ((['capture_AUX0', 'capture_MONO'], ['input_FL', 'input_FR']),
                                      (['capture_AUX0', 'capture_AUX0', 'capture_MONO'], ['input_FL', 'input_FR']),
                                      (['capture_AUX0'], ['input_FL', 'input_FR', 'input_MONO']),
+                                     (['capture_AUX0'], ['input_FL', 'input_FR', 'input_MONO', 'input_MONO']),
+                                     (['capture_MONO'], ['input_MONO', 'input_FL', 'input_FL', 'input_FR', 'input_FR']),
+                                     (['capture_MONO'], ['input_MONO', 'input_MONO']),
                                      (['capture_AUX0'], ['input_FL'])):
         audio = Audio(); audio.dsp_ports = dsp_ports; audio.capture_ports = capture_ports
         try: m.reconcile(audio, Path(temporary) / 'both.json')
@@ -985,8 +989,33 @@ with tempfile.TemporaryDirectory() as temporary:
         assert audio.restarts == 1 and not audio.notices, 'an event before the retry asks nothing and keeps the notice back'
     with mock.patch.object(m.time, 'monotonic', return_value=1000.0 + m.OUTAGE_GRACE + 30):
         pass_(audio)
-        assert audio.restarts == 2 and not m.installed['pending'] and m.outage['repaired'] and not audio.notices, ('the retry restarts once and counts as the outage repair', audio.restarts, m.installed, m.outage, audio.notices)
+        assert audio.restarts == 2 and not m.installed['pending'] and m.outage['repaired'] and not audio.notices, 'the retry restarts once and counts as the outage repair'
         assert not json.loads(record.read_text())['pending']
+    reset()
+    # A pending repair waits for a later pacman transaction to end, and a
+    # deferred one keeps its retry time across a reload of the watcher.
+    reset(); m.installed.update(record=record, signature='')
+    audio = Scripted([m.DEFERRED, 0]); audio.no_dsp = True; audio.busy = True
+    m.record_installed(True)
+    with mock.patch.object(m.time, 'monotonic', return_value=100.0):
+        pass_(audio)
+        assert audio.restarts == 0 and m.installed['pending'] and m.outage_due() == 5.0, 'no restart while pacman runs'
+    audio.busy = False
+    with mock.patch.object(m.time, 'monotonic', return_value=103.0):
+        pass_(audio)
+        assert audio.restarts == 0, 'nor before the retry time'
+    with mock.patch.object(m.time, 'monotonic', return_value=105.0):
+        pass_(audio)
+        assert audio.restarts == 1 and m.installed['pending'] and json.loads(record.read_text())['retry_at'] == 135.0
+    reset()
+    with mock.patch.object(m.time, 'monotonic', return_value=106.0):
+        watcher()
+        assert m.installed['pending'] and m.installed['retry_at'] == 135.0 and m.outage_due() == 29.0, 'a reloaded watcher keeps the retry time'
+        pass_(audio)
+        assert audio.restarts == 1, 'an early event after a reload asks nothing'
+    with mock.patch.object(m.time, 'monotonic', return_value=135.0):
+        pass_(audio)
+        assert audio.restarts == 2 and not m.installed['pending'] and not json.loads(record.read_text())['pending']
     reset()
     # The watcher asks changed() on its poll schedule and runs a full pass.
     calls = []
