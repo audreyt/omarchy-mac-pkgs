@@ -9,9 +9,9 @@ omarchy-hw-apple-silicon || return 0
 
 (
   set -uo pipefail
-  # The first m1n1-aurora whose T8122 display handoff waits for that line.
-  # Empty until omarchy-pkgs publishes it: nothing is written until then.
-  m1n1_t8122_dcp_minimum=
+  # The first m1n1-aurora that reserves the external DCP firmware only on its
+  # own opt-in (omacom/m1n1#14, omarchy-pkgs#1564); 20-3 black-screens. Keep the pkgrel.
+  m1n1_t8122_dcp_minimum=1.6.1.aurora20-4
   minimum_m1n1=${OMARCHY_M1N1_T8122_DCP_MINIMUM-$m1n1_t8122_dcp_minimum}
   compatible=${OMARCHY_DEVICE_TREE_COMPATIBLE:-/proc/device-tree/compatible}
   config=${OMARCHY_M1N1_CONF:-/etc/m1n1.conf}

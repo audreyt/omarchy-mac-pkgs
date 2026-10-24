@@ -48,7 +48,7 @@ run() {
   PATH="${VERCMP:+$fake_vercmp:}$stub:$PATH" OMARCHY_DEVICE_TREE_COMPATIBLE=$work/compatible OMARCHY_M1N1_CONF=$work/etc/m1n1.conf \
     OMARCHY_SYSTEMD_RUN=${SYSTEMD_RUN-$work/run-systemd} \
     OMARCHY_M1N1_T8122_DCP_MINIMUM=${MINIMUM-1.6.1.aurora21-1} M1N1_VERSION=${VERSION-1.6.1.aurora21-1} \
-    bash -c 'source "$1"' _ "$ROOT/setup/m1n1-display.sh" >"$work/out" 2>&1
+    bash -c '[[ -z ${PACKAGED:-} ]] || unset OMARCHY_M1N1_T8122_DCP_MINIMUM; source "$1"' _ "$ROOT/setup/m1n1-display.sh" >"$work/out" 2>&1
 }
 conf() { cat "$work/etc/m1n1.conf" 2>/dev/null || echo absent; }
 
@@ -100,9 +100,20 @@ machine apple,j504 apple,t8122 apple,arm-platform
 check_untouched 'another T8122 Mac is left alone'
 machine apple,j414c apple,t6021 apple,arm-platform
 check_untouched 'an M2 Max is left alone'
-grep -Fxq '  m1n1_t8122_dcp_minimum=' "$ROOT/setup/m1n1-display.sh" ||
-  fail 'the packaged minimum stays empty until the gated m1n1-aurora is published'
-pass 'nothing is written without a gated m1n1-aurora on an M3 Air'
+grep -Fxq '  m1n1_t8122_dcp_minimum=1.6.1.aurora20-4' "$ROOT/setup/m1n1-display.sh" ||
+  fail 'the packaged minimum is the first m1n1-aurora with the dcpext opt-in, pkgrel included'
+# The packaged minimum: 20-3 black-screens an M3 Air with the line, 20-4 does not.
+machine apple,j613 apple,t8122 apple,arm-platform
+PACKAGED=1 VERSION=1.6.1.aurora20-3 check_untouched 'm1n1-aurora 1.6.1.aurora20-3, the black-screen build, gets nothing written'
+rm -rf "$work/etc"
+PACKAGED=1 VERSION=1.6.1.aurora20-4 run && grep -Fxq 'chosen.asahi,t8122-dcp=1' "$work/etc/m1n1.conf" ||
+  fail 'm1n1-aurora 1.6.1.aurora20-4 gets the display line' "$(conf) $(cat "$work/out")"
+for newer in 1.6.1.aurora20-10 1.6.1.aurora21-1; do
+  rm -rf "$work/etc"
+  PACKAGED=1 VERSION=$newer run && grep -Fxq 'chosen.asahi,t8122-dcp=1' "$work/etc/m1n1.conf" ||
+    fail "m1n1-aurora $newer, newer than the packaged minimum, gets the display line" "$(conf) $(cat "$work/out")"
+done
+pass 'only an m1n1-aurora at or above the packaged minimum gets the line on an M3 Air'
 
 # A failed rebuild leaves m1n1.conf as it was, so the boot check stays consistent.
 machine apple,j613 apple,t8122 apple,arm-platform
