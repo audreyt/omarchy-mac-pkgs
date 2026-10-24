@@ -162,7 +162,14 @@ printf 'ESP_PATH="/boot/efi"\n  KERNEL_CMDLINE[default]="root=UUID=old rw quiet"
 run || fail "the run over an indented = line succeeds"
 [[ $(grep -c 'KERNEL_CMDLINE\[default\]' "$limine") == 1 ]] && ! grep -q 'root=UUID=old' "$limine" ||
   fail "an indented = line is replaced, not left beside the new one" "$(cat "$limine")"
-pass "an existing = line is rewritten with +="
+# The helper owns the file's command lines, so an owner's own += line goes too;
+# customisations belong in /etc/limine-entry-tool.d/.
+printf 'ESP_PATH="/boot/efi"\nKERNEL_CMDLINE[default]+="root=UUID=old rw quiet"\n  KERNEL_CMDLINE[default]+=" custom=1"\n' >"$limine"
+run || fail "the run over an indented += line succeeds"
+[[ $(grep -c 'KERNEL_CMDLINE\[default\]' "$limine") == 1 ]] && ! grep -q 'custom=1' "$limine" &&
+  grep -Fxq "KERNEL_CMDLINE[default]+=\"root=UUID=$root_uuid rw quiet\"" "$limine" ||
+  fail "an indented += line is removed with the rest" "$(cat "$limine")"
+pass "an existing = line is rewritten with +=, and the helper's line is the only one"
 
 # limine-entry-tool loads /etc/limine-entry-tool.d/*.conf before
 # /etc/default/limine, so only += keeps what a drop-in appended. Runs the real

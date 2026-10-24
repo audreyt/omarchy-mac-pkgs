@@ -14,6 +14,8 @@
 # drop-ins add after it; GRUB, the fallback loader, boots without those. Linked
 # as /etc/boot/hooks/pre.d/20-omarchy-mac-cmdline it runs before every UKI
 # rebuild; omarchy-mac-boot-update runs it too.
+# It owns every KERNEL_CMDLINE[default] line in /etc/default/limine and keeps only
+# its own; customisations belong in /etc/limine-entry-tool.d/.
 
 set -uo pipefail
 set -f
