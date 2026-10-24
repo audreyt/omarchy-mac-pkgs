@@ -48,7 +48,9 @@ run() {
   PATH="${VERCMP:+$fake_vercmp:}$stub:$PATH" OMARCHY_DEVICE_TREE_COMPATIBLE=$work/compatible OMARCHY_M1N1_CONF=$work/etc/m1n1.conf \
     OMARCHY_SYSTEMD_RUN=${SYSTEMD_RUN-$work/run-systemd} \
     OMARCHY_M1N1_T8122_DCP_MINIMUM=${MINIMUM-1.6.1.aurora21-1} M1N1_VERSION=${VERSION-1.6.1.aurora21-1} \
-    bash -c '[[ -z ${PACKAGED:-} ]] || unset OMARCHY_M1N1_T8122_DCP_MINIMUM; source "$1"' _ "$ROOT/setup/m1n1-display.sh" >"$work/out" 2>&1
+    bash -c '[[ -z ${PACKAGED:-} ]] || unset OMARCHY_M1N1_T8122_DCP_MINIMUM
+      [[ -z ${FILE_BLOCKS:-} ]] || { trap "" XFSZ; ulimit -f "$FILE_BLOCKS"; }
+      source "$1"' _ "$ROOT/setup/m1n1-display.sh" >"$work/out" 2>&1
 }
 conf() { cat "$work/etc/m1n1.conf" 2>/dev/null || echo absent; }
 
@@ -119,7 +121,7 @@ pass 'only an m1n1-aurora at or above the packaged minimum gets the line on an M
 machine apple,j613 apple,t8122 apple,arm-platform
 rm -rf "$work/etc"
 UPDATE_FAILS=1 run || fail 'a failed update-m1n1 warns but never fails the setup'
-[[ $(conf) == absent ]] && grep -q 'stays off' "$work/out" || fail 'a new m1n1.conf is removed again after a failed rebuild, and it says so' "$(conf)"
+[[ $(conf) == absent ]] && grep -q 'is back as it was' "$work/out" || fail 'a new m1n1.conf is removed again after a failed rebuild, and it says so' "$(conf)"
 mkdir -p "$work/etc" && printf 'display=1920x1080' >"$work/etc/m1n1.conf"
 cp "$work/etc/m1n1.conf" "$work/original"
 UPDATE_FAILS=1 run || fail 'a failed update-m1n1 warns but never fails the setup'
@@ -134,6 +136,14 @@ cat >"$stub/sudo" <<'SH'
 [[ ${RESTORE_FAILS:-} == 1 && $1 == install && $2 == -m ]] && exit 1
 exec "$@"
 SH
+# A full /tmp: one block (1024 bytes in bash's ulimit -f) fits the copy, but not the appends after it.
+for ending in '' $'\n'; do
+  mkdir -p "$work/etc" && { head -c $((1024 - ${#ending})) /dev/zero | tr '\0' '#'; printf '%s' "$ending"; } >"$work/etc/m1n1.conf"
+  cp "$work/etc/m1n1.conf" "$work/original"
+  FILE_BLOCKS=1 run || fail 'a staging write that runs out of space never fails the setup'
+  cmp -s "$work/etc/m1n1.conf" "$work/original" && [[ ! -s $CALLS ]] && grep -q 'could not stage' "$work/out" && ! grep -q enabled "$work/out" ||
+    fail "a staging append that runs out of space leaves m1n1.conf alone and says so (last newline: ${ending:+yes}${ending:-no})" "$(cat "$work/out")"
+done
 UPDATE_FAILS=1 RESTORE_FAILS=1 run || fail 'a failed restore still never fails the setup'
 grep -q 'could not be put back' "$work/out" || fail 'a failed restore says so instead of claiming m1n1.conf is back' "$(cat "$work/out")"
 pass 'a failed rebuild puts m1n1.conf back exactly, and the setup carries on'

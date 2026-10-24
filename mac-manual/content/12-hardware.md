@@ -61,7 +61,7 @@ Everything below the desktop is the Asahi Linux project's work, and the authorit
 
 ### M3 MacBook Air (edge testers)
 
-M3 Macs are not part of the first release. On an M3 MacBook Air installed from an edge image, the native display needs the line `chosen.asahi,t8122-dcp=1` in `/etc/m1n1.conf`, and a fresh install writes it when its `m1n1-aurora` is 1.6.1.aurora20-4 or newer. An M3 Air installed before that keeps its old boot setup. Once `pacman -Q m1n1-aurora` reports 1.6.1.aurora20-4 or newer, add the line yourself, unless `/etc/m1n1.conf` already has one, and rebuild m1n1's boot image, then reboot:
+M3 Macs are not part of the first release. On an M3 MacBook Air installed from an edge image, the native display needs the line `chosen.asahi,t8122-dcp=1` in `/etc/m1n1.conf`, and a fresh install writes it when its `m1n1-aurora` is 1.6.1.aurora20-4 or newer. An M3 Air installed with an older `m1n1-aurora`, such as one from an image built before 20-4, doesn't get the line later, since updates don't write it. Once `pacman -Q m1n1-aurora` reports 1.6.1.aurora20-4 or newer, add the line yourself, unless `/etc/m1n1.conf` already has one, and rebuild m1n1's boot image, then reboot:
 
 ```bash
 grep -Eq '^[[:space:]]*chosen\.asahi,t8122-dcp=' /etc/m1n1.conf 2>/dev/null ||

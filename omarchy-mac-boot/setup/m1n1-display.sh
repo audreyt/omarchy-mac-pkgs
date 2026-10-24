@@ -49,16 +49,18 @@ omarchy-hw-apple-silicon || return 0
     exit 0
   fi
 
-  staged=$(mktemp -d) || { echo "m1n1-display: could not stage $config; leaving it alone" >&2; exit 0; }
+  m1n1_display_unstaged() { echo "m1n1-display: could not stage $config; leaving it alone" >&2; exit 0; }
+  staged=$(mktemp -d) || m1n1_display_unstaged
   trap 'rm -rf "$staged"' EXIT
-  : >"$staged/new"
+  : >"$staged/new" || m1n1_display_unstaged
   if [[ -e $config ]]; then
-    cp "$config" "$staged/original" && cp "$config" "$staged/new" ||
-      { echo "m1n1-display: could not stage $config; leaving it alone" >&2; exit 0; }
+    cp "$config" "$staged/original" && cp "$config" "$staged/new" || m1n1_display_unstaged
     # Keep a last line without its newline from swallowing ours.
-    [[ ! -s $staged/new || $(tail -c 1 "$staged/new" | od -An -c | tr -d ' ') == '\n' ]] || printf '\n' >>"$staged/new"
+    [[ ! -s $staged/new || $(tail -c 1 "$staged/new" | od -An -c | tr -d ' ') == '\n' ]] ||
+      printf '\n' >>"$staged/new" || m1n1_display_unstaged
   fi
-  printf '# omarchy-mac-boot: the M3 Air native display. Set it to 0 to keep m1n1 from handing it over.\n%s=1\n' "$key" >>"$staged/new"
+  printf '# omarchy-mac-boot: the M3 Air native display. Set it to 0 to keep m1n1 from handing it over.\n%s=1\n' "$key" >>"$staged/new" ||
+    m1n1_display_unstaged
 
   # Put the original bytes back (install can unlink the file before copying).
   m1n1_display_restore() {
@@ -70,7 +72,7 @@ omarchy-hw-apple-silicon || return 0
   }
   m1n1_display_failed() {
     if m1n1_display_restore; then
-      echo "m1n1-display: $1; $config is back as it was, and the native display stays off" >&2
+      echo "m1n1-display: $1; $config is back as it was, and boot.bin is unchanged unless update-m1n1 failed after replacing it" >&2
     else
       echo "m1n1-display: $1, and $config could not be put back; the next update-m1n1 takes its $key line" >&2
     fi
