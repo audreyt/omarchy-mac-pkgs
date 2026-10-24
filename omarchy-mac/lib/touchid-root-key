@@ -10,7 +10,9 @@ as macOS stores the other records in its factory cache. Every byte comes from
 those records, and each must also be found, byte for byte, somewhere in this
 Mac's own iBoot System Container. That proves each record is present there, not
 that it is the active or an authentic one. The logic follows
-omarchy-mac-installer's factory_root_key()."""
+omarchy-mac-installer's factory_root_key().
+
+With --check FILE it only says whether FILE is a whole sensor root key."""
 
 import argparse
 import hashlib
@@ -123,7 +125,7 @@ def check_root_key(data):
         if len(manifest) < 2 or ia5(data, manifest[0]) != b"IM4M":
             raise ValueError("missing manifest")
     except (ValueError, IndexError) as error:
-        raise Refused(f"the rebuilt key is not a whole sensor root key: {error}") from error
+        raise Refused(f"the key is not a whole sensor root key: {error}") from error
     return data
 
 
@@ -278,6 +280,15 @@ def apple_silicon():
         return False
 
 
+def check(path):
+    try:
+        with open(path, "rb") as fd:
+            data = fd.read(RECORD_MAXIMUM + 1)
+    except OSError as error:
+        raise Refused(f"cannot read {path}: {error}") from error
+    check_root_key(data)
+
+
 def main():
     if not apple_silicon():
         print("touchid-root-key: this is not an Apple Silicon Mac", file=sys.stderr)
@@ -285,8 +296,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--archive", default="/boot/efi/asahi/all_firmware.tar.gz")
     parser.add_argument("--container", default="/dev/disk/by-partlabel/iBootSystemContainer")
-    parser.add_argument("-o", "--output", required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("-o", "--output")
+    action.add_argument("--check", metavar="FILE")
     arguments = parser.parse_args()
+    if arguments.check:
+        try:
+            check(arguments.check)
+        except Refused as error:
+            print(f"touchid-root-key: {arguments.check}: {error}", file=sys.stderr)
+            return 1
+        return 0
     try:
         records = factory_records(arguments.archive)
         _, record = one(records, "MSRk-")

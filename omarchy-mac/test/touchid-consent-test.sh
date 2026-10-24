@@ -342,6 +342,37 @@ printf '#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\nprintf key >"$2"\nexit 
 chmod +x "$fixture/bin/late-failing-python"
 ! python=$fixture/bin/late-failing-python run touchid-enable >/dev/null 2>&1 && [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] ||
   fail "a key the extractor installed before failing is taken back" "$(key_copies)"
+# A sensor key counts only once it is whole: a broken one in the updates
+# directory is rebuilt, and one elsewhere, or one that can't be checked, stops.
+neo
+mkdir -p "${installed_key%/*}"
+printf 'not a key' >"$installed_key"
+out=$(run touchid-enable 2>&1) && cmp -s "$installed_key" "$work/factory/key.bin" && [[ $(stat -c %a "$installed_key") == 600 ]] ||
+  fail "a broken sensor key in the updates directory is rebuilt, not trusted" "$out"
+neo
+printf 'not a key' >"$fixture/firmware/vendor/apple/msrk-j700.bin"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"msrk-j700.bin is not whole; remove it"* && ! -e $fixture/etc/touchid-on ]] &&
+  [[ $(<"$fixture/firmware/vendor/apple/msrk-j700.bin") == "not a key" && -z $(key_copies "$fixture/firmware/vendor/apple/msrk-j700.bin") ]] &&
+  ! grep -q modprobe "$fixture/calls" || fail "a broken sensor key outside the updates directory stops the setup and is left alone" "$out"
+neo
+cp "$work/factory/key.bin" "$fixture/firmware/vendor/apple/msrk-j700.bin"
+! out=$(python=no-such-python run touchid-enable 2>&1) && [[ $out == *"can't be checked without Python"* && ! -e $fixture/etc/touchid-on ]] ||
+  fail "a sensor key that can't be checked is not trusted" "$out"
+# One setup or removal at a time: a run that can't take the lock does nothing,
+# and one that waits for it goes on once it is free.
+neo
+exec {held}>>"$fixture/run/touchid.lock"
+flock "$held"
+! out=$(OMARCHY_MAC_TOUCHID_LOCK_WAIT=0 run touchid-enable 2>&1) && [[ $out == *"another Touch ID setup or removal is still running"* ]] &&
+  [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] && ! grep -q modprobe "$fixture/calls" ||
+  fail "a setup that can't take the lock touches nothing" "$out; $(key_copies)"
+exec {held}>&-
+rm -f "$fixture/locked"
+flock "$fixture/run/touchid.lock" -c "touch '$fixture/locked'; sleep 1" &
+holder=$!
+until [[ -e $fixture/locked ]]; do sleep 0.05; done
+out=$(run touchid-enable 2>&1) && cmp -s "$installed_key" "$work/factory/key.bin" || fail "a setup that waits for the lock goes on" "$out"
+wait "$holder"
 # A driver whose node never appears: the activation never ran, so the status
 # says it failed and the owner is pointed at the kernel log.
 machine apple,j414c apple,t6021 apple,arm-platform
@@ -467,7 +498,7 @@ for name in enable-fingerprint disable-fingerprint; do
     -e "s|/usr/lib/omarchy-mac/touchid-enable|$fixture/bin/enable-stub|g" -e "s|/etc/omarchy-mac/touchid-on|$fixture/etc/touchid-on|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-eligibility|$fixture/bin/eligibility-stub|g" \
     -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" -e "s|/usr/lib/firmware/updates/|$fixture/firmware/updates/|g" \
-    -e "s|/proc/device-tree/compatible|$tree/compatible|g" "$ROOT/entrypoints/$name" >"$entry/$name"
+    -e "s|/proc/device-tree/compatible|$tree/compatible|g" -e "s|flock -w 300|flock -w 0|" "$ROOT/entrypoints/$name" >"$entry/$name"
   chmod +x "$entry/$name"
 done
 printf '#!/bin/sh\necho enable >>"%s"\nexit 0\n' "$fixture/calls" >"$fixture/bin/enable-stub"
@@ -564,6 +595,16 @@ PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z 
 printf partial >"$fixture/firmware/updates/apple/msrk-j700.bin.new"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z $(key_copies) ]] ||
   fail "turning it off deletes an interrupted rebuild's temporary copy" "$(key_copies)"
+# A removal waits for a setup still running, which could install its key after.
+touch "$fixture/etc/touchid-on"
+cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"
+exec {held}>>"$fixture/run/touchid.lock"
+flock "$held"
+! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && grep -q 'another Touch ID setup is still running' "$fixture/out" &&
+  [[ -e $fixture/etc/touchid-on && -n $(key_copies) ]] || fail "a removal that can't take the lock removes nothing" "$(<"$fixture/out")"
+exec {held}>&-
+PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] ||
+  fail "a removal goes on once the lock is free" "$(key_copies)"
 mkdir -p "$fixture/etc/touchid-on/in-the-way"
 ! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && grep -q 'could not be turned off' "$fixture/out" &&
   ! grep -q 'stops loading' "$fixture/out" ||
