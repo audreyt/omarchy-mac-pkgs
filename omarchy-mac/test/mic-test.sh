@@ -932,7 +932,14 @@ with tempfile.TemporaryDirectory() as temporary:
     lock = directory / 'db.lck'; pacman = [False]
     record = directory / 'run/omarchy-asahi-mic.installed'
     def watcher(): return m.Installed(record, paths=(lv2, directory / 'absent'), lock=lock, running=lambda: pacman[0])
-    reset(); watched = watcher()
+    # A first start (no record: the first run after an update, or a login)
+    # looks once, FIRST_LOOK later; a DSP present by then needs nothing.
+    reset()
+    with mock.patch.object(m.time, 'monotonic', return_value=500.0):
+        watched = watcher()
+        assert m.installed['pending'] and m.installed['retry_at'] == 530.0 and m.outage_due() == 30.0, 'a first start looks once, later'
+        audio = Audio(); m.reconcile(audio, directory / 'first.json')
+        assert audio.restarts == 0 and not m.installed['pending'] and not json.loads(record.read_text())['pending'], 'a present DSP ends the first look'
     assert record.exists() and not watched.changed() and not m.installed['pending'], 'an unchanged tree is no update'
     lock.touch(); pacman[0] = True
     (lv2 / 'triforce.lv2').mkdir()
@@ -940,15 +947,17 @@ with tempfile.TemporaryDirectory() as temporary:
     pacman[0] = False
     assert watched.changed() and m.installed['pending'] and not watched.changed(), 'a finished update wakes one pass'
     # A watcher that reloads before the pending repair ran keeps it.
+    retry = m.installed['retry_at']
     reset(); reloaded = watcher()
-    assert m.installed['pending'] and not reloaded.changed(), 'a reloaded watcher keeps the pending repair, and the change is not seen twice'
+    assert m.installed['pending'] and m.installed['retry_at'] == retry and not reloaded.changed(), 'a reloaded watcher keeps the pending repair, and the change is not seen twice'
     m.record_installed(False)
     reset(); watcher()
     assert not m.installed['pending'], 'a repair that ran is not run again after a reload'
     os.utime(lv2 / 'lsp-plugins.lv2', ns=(2 * 10**18, 2 * 10**18))
     assert watcher().changed(), 'a changed plugin bundle counts too'
     record.write_text('not json'); reset()
-    assert not watcher().changed() and not m.installed['pending'], 'a damaged record starts from the current tree'
+    assert not watcher().changed() and m.installed['pending'] and m.installed['retry_at'] is not None, 'a damaged record starts from the current tree, with a first look'
+    m.record_installed(False)
     with mock.patch.object(Path, 'iterdir', side_effect=PermissionError('denied')):
         assert watched.signature() is None and not watched.changed(), 'an unreadable directory changes nothing'
     reset()
@@ -991,6 +1000,17 @@ with tempfile.TemporaryDirectory() as temporary:
         pass_(audio)
         assert audio.restarts == 2 and not m.installed['pending'] and m.outage['repaired'] and not audio.notices, 'the retry restarts once and counts as the outage repair'
         assert not json.loads(record.read_text())['pending']
+    reset()
+    # The update that brought the missing plugin also replaced the mapper: its
+    # first run has no record, finds the DSP missing and restarts once, later.
+    reset(); record.unlink()
+    audio = Audio(); audio.no_dsp = True
+    with mock.patch.object(m.time, 'monotonic', return_value=700.0):
+        watcher(); pass_(audio)
+        assert audio.restarts == 0 and m.installed['pending'], 'not at once: WirePlumber may still be starting'
+    with mock.patch.object(m.time, 'monotonic', return_value=730.0):
+        pass_(audio)
+        assert audio.restarts == 1 and not m.installed['pending'], 'one restart once the first look is due'
     reset()
     # A pending repair waits for a later pacman transaction to end, and a
     # deferred one keeps its retry time across a reload of the watcher.

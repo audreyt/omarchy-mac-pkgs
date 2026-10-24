@@ -47,6 +47,9 @@ ASOUND_CARDS = Path('/proc/asound/cards')
 # graph lacked) brings no audio event: WirePlumber builds the graph only when
 # the array's node appears, so the mapper restarts it.
 AUDIO_FILES = (Path('/usr/lib/lv2'), Path('/usr/share/asahi-audio'), Path('/usr/share/wireplumber/wireplumber.conf.d'))
+# A watcher with no record may be the first run after the update that brought
+# the missing files: it looks once, this long after starting.
+FIRST_LOOK = 30.0
 MODEL = Path('/proc/device-tree/model')
 OUTAGE_GRACE = 10.0
 REPAIR_INTERVAL = 300.0
@@ -837,7 +840,7 @@ class Installed:
             if not isinstance(signature, str) or type(pending) is not bool or not (retry_at is None or type(retry_at) is float):
                 raise ValueError('Invalid microphone update record')
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            signature, pending, retry_at = self.signature(), False, None
+            signature, pending, retry_at = self.signature(), True, time.monotonic() + FIRST_LOOK
         if signature is None:
             signature = ''
         record_installed(pending, signature, retry_at)
