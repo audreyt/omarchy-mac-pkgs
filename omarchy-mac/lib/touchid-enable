@@ -49,17 +49,23 @@ installed() {
 }
 
 # A sensor key counts only once it checks out whole. A broken one in the updates
-# directory is rebuilt; one anywhere else would shadow or outlive a rebuild there.
+# directory is rebuilt, and goes if that fails; one anywhere else would shadow
+# or outlive a rebuild there.
 root_key_installed() {
-  local directory key found=1
+  local directory key found=1 checked
   for directory in "$firmware" "$firmware/vendor" "$firmware/updates"; do
     key=$directory/apple/msrk-j700.bin
     if [[ ! -e $key ]]; then
       continue
     elif ! command -v "$python" >/dev/null; then
       fail "this Mac's sensor key at $key can't be checked without Python"
-    elif "$python" -I "$helpers/touchid-root-key" --check "$key" >/dev/null 2>&1; then
+    fi
+    checked=0
+    "$python" -I "$helpers/touchid-root-key" --check "$key" >/dev/null 2>&1 || checked=$?
+    if (( checked == 0 )); then
       found=0
+    elif (( checked != 3 )); then
+      fail "this Mac's sensor key at $key could not be checked"
     elif [[ $directory == "$firmware/updates" ]]; then
       echo "The sensor key at $key is not whole, so it is read again."
       return 1
@@ -73,7 +79,9 @@ root_key_installed() {
 # One setup or removal at a time: two would share the sensor key's temporary
 # copy, and one could install the other's unfinished key.
 lock=${status_file%/*}/touchid.lock
-if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null || ! flock -w "$lock_wait" "$lock_fd"; then
+if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null; then
+  fail "its lock, $lock, could not be opened"
+elif ! flock -w "$lock_wait" "$lock_fd"; then
   fail "another Touch ID setup or removal is still running; try again once it finishes"
 fi
 

@@ -358,6 +358,21 @@ neo
 cp "$work/factory/key.bin" "$fixture/firmware/vendor/apple/msrk-j700.bin"
 ! out=$(python=no-such-python run touchid-enable 2>&1) && [[ $out == *"can't be checked without Python"* && ! -e $fixture/etc/touchid-on ]] ||
   fail "a sensor key that can't be checked is not trusted" "$out"
+# A check that fails to run is no verdict: the key stays, and nothing turns on.
+neo
+mkdir -p "${installed_key%/*}"
+cp "$work/factory/key.bin" "$installed_key"
+printf '#!/bin/sh\nexit 1\n' >"$fixture/bin/broken-python"
+chmod +x "$fixture/bin/broken-python"
+! out=$(python=$fixture/bin/broken-python run touchid-enable 2>&1) && [[ $out == *"could not be checked"* && ! -e $fixture/etc/touchid-on ]] &&
+  cmp -s "$installed_key" "$work/factory/key.bin" || fail "a sensor key whose check fails to run is neither trusted nor removed" "$out"
+# A broken key in the updates directory that can't be rebuilt goes.
+neo
+mkdir -p "${installed_key%/*}"
+printf 'not a key' >"$installed_key"
+rm "$fixture/esp/asahi/all_firmware.tar.gz"
+! out=$(run touchid-enable 2>&1) && [[ $out == *"sensor key could not be read"* && -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] ||
+  fail "a broken sensor key that can't be rebuilt is removed, and nothing turns on" "$out; $(key_copies)"
 # One setup or removal at a time: a run that can't take the lock does nothing,
 # and one that waits for it goes on once it is free.
 neo
@@ -367,12 +382,21 @@ flock "$held"
   [[ -z $(key_copies) && ! -e $fixture/etc/touchid-on ]] && ! grep -q modprobe "$fixture/calls" ||
   fail "a setup that can't take the lock touches nothing" "$out; $(key_copies)"
 exec {held}>&-
-rm -f "$fixture/locked"
-flock "$fixture/run/touchid.lock" -c "touch '$fixture/locked'; sleep 1" &
-holder=$!
-until [[ -e $fixture/locked ]]; do sleep 0.05; done
-out=$(run touchid-enable 2>&1) && cmp -s "$installed_key" "$work/factory/key.bin" || fail "a setup that waits for the lock goes on" "$out"
-wait "$holder"
+# The lock is released only once the setup is seen waiting for it.
+neo
+exec {held}>>"$fixture/run/touchid.lock"
+flock "$held"
+# The setup gets no copy of the held descriptor, which would keep the lock.
+OMARCHY_MAC_TOUCHID_LOCK_WAIT=30 run touchid-enable >"$fixture/out" 2>&1 {held}>&- &
+waiter=$!
+for ((attempt = 0; attempt < 200; attempt++)); do
+  waiting=$(pgrep -f '^flock -w 30 [0-9]+$' || true)
+  [[ -n $waiting ]] && break
+  sleep 0.05
+done
+exec {held}>&-
+wait "$waiter" && cmp -s "$installed_key" "$work/factory/key.bin" && [[ -n $waiting ]] ||
+  fail "a setup that waits for the lock goes on once it is free" "$(<"$fixture/out")"
 # A driver whose node never appears: the activation never ran, so the status
 # says it failed and the owner is pointed at the kernel log.
 machine apple,j414c apple,t6021 apple,arm-platform
@@ -595,6 +619,23 @@ PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z 
 printf partial >"$fixture/firmware/updates/apple/msrk-j700.bin.new"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 && [[ -z $(key_copies) ]] ||
   fail "turning it off deletes an interrupted rebuild's temporary copy" "$(key_copies)"
+# An agreed Mac's options are written under the lock too, so a removal running
+# now can't be undone.
+mkdir -p "$fixture/etc"
+touch "$fixture/etc/touchid-on"
+rm -f "$fixture/etc/modprobe.conf"
+exec {held}>>"$fixture/run/touchid.lock"
+flock "$held"
+! ask ready '' && grep -q 'another Touch ID setup or removal is still running' "$fixture/out" && [[ ! -e $fixture/etc/modprobe.conf ]] ||
+  fail "an agreed Mac's options wait for the lock" "$(<"$fixture/out")"
+exec {held}>&-
+rm "$fixture/etc/touchid-on"
+# A lock that can't be opened is said to be so, not taken for a setup running.
+rm -f "$fixture/run/touchid.lock"
+mkdir "$fixture/run/touchid.lock"
+! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && grep -q 'could not be opened' "$fixture/out" ||
+  fail "a removal whose lock can't be opened says so" "$(<"$fixture/out")"
+rmdir "$fixture/run/touchid.lock"
 # A removal waits for a setup still running, which could install its key after.
 touch "$fixture/etc/touchid-on"
 cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"

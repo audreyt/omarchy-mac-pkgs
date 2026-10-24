@@ -8,7 +8,10 @@ omarchy-hw-apple-silicon || exit 0
 # Waits for a Touch ID setup still running, which could otherwise install its
 # sensor key after this removes it.
 lock=/run/omarchy-mac/touchid.lock
-if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null || ! flock -w 300 "$lock_fd"; then
+if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null; then
+  echo "Touch ID could not be turned off: its lock, $lock, could not be opened." >&2
+  exit 1
+elif ! flock -w 300 "$lock_fd"; then
   echo "Touch ID could not be turned off: another Touch ID setup is still running. Try again once it finishes." >&2
   exit 1
 fi
