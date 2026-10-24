@@ -19,6 +19,7 @@ keybag=${OMARCHY_MAC_TOUCHID_KEYBAG:-/var/lib/aurora-sep-keybag.bin}
 esp=${OMARCHY_MAC_TOUCHID_ESP:-/boot/efi}
 container=${OMARCHY_MAC_TOUCHID_CONTAINER:-/dev/disk/by-partlabel/iBootSystemContainer}
 python=${OMARCHY_MAC_TOUCHID_PYTHON:-python3}
+lock_wait=${OMARCHY_MAC_TOUCHID_LOCK_WAIT:-300}
 omarchy-hw-apple-silicon || exit 0
 
 # Once this run records the agreement, a failure takes it back, so a Touch ID
@@ -47,6 +48,43 @@ installed() {
   return 1
 }
 
+# A sensor key counts only once it checks out whole. A broken one in the updates
+# directory is rebuilt, and goes if that fails; one anywhere else would shadow
+# or outlive a rebuild there.
+root_key_installed() {
+  local directory key found=1 checked
+  for directory in "$firmware" "$firmware/vendor" "$firmware/updates"; do
+    key=$directory/apple/msrk-j700.bin
+    if [[ ! -e $key ]]; then
+      continue
+    elif ! command -v "$python" >/dev/null; then
+      fail "this Mac's sensor key at $key can't be checked without Python"
+    fi
+    checked=0
+    "$python" -I "$helpers/touchid-root-key" --check "$key" >/dev/null 2>&1 || checked=$?
+    if (( checked == 0 )); then
+      found=0
+    elif (( checked != 3 )); then
+      fail "this Mac's sensor key at $key could not be checked"
+    elif [[ $directory == "$firmware/updates" ]]; then
+      echo "The sensor key at $key is not whole, so it is read again."
+      return 1
+    else
+      fail "the sensor key at $key is not whole; remove it, then turn Touch ID on again"
+    fi
+  done
+  return $found
+}
+
+# One setup or removal at a time: two would share the sensor key's temporary
+# copy, and one could install the other's unfinished key.
+lock=${status_file%/*}/touchid.lock
+if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null; then
+  fail "its lock, $lock, could not be opened"
+elif ! flock -w "$lock_wait" "$lock_fd"; then
+  fail "another Touch ID setup or removal is still running; try again once it finishes"
+fi
+
 eligibility=$("$helpers/touchid-eligibility")
 [[ $eligibility == "available" ]] || fail "this Mac can't use it yet ($eligibility)"
 
@@ -66,13 +104,13 @@ if ! installed "$calibration"; then
     { rm -f "$carved.new"; fail "this Mac's calibration could not be read"; }
   chmod 0644 "$carved.new" && mv -f "$carved.new" "$carved" || { rm -f "$carved.new"; fail "this Mac's calibration could not be installed"; }
 fi
-if tr '\0' '\n' <"$tree/compatible" | grep -Fxq apple,t8140 && ! installed apple/msrk-j700.bin; then
+if tr '\0' '\n' <"$tree/compatible" | grep -Fxq apple,t8140 && ! root_key_installed; then
   # Rebuilt only now, from the factory records asahi-installer leaves on the
   # ESP and checked against this Mac's iBoot System Container; root-only, and
   # it takes its name only once whole. Turning Touch ID off deletes it.
   echo "Reading this Mac's Touch ID sensor key..."
   mkdir -p -m 0755 "$firmware/updates/apple"
-  # No key was installed, so whatever takes its name from here is this run's:
+  # No whole key was installed, so whatever takes its name from here is this run's:
   # a failure, even one the extractor reports after its rename, takes it back
   # with the agreement.
   rebuilt=1
