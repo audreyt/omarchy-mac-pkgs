@@ -7,9 +7,13 @@ The key is device-private. asahi-installer leaves this Mac's factory records
 on the ESP, in asahi/all_firmware.tar.gz; the key is the MSRk record's IM4P
 under the FDR sealing manifest (seal-<ECID>), with the trust bundle as secb,
 as macOS stores the other records in its factory cache. Every byte comes from
-those records, each of which must also be found in this Mac's own iBoot
-System Container, so an archive from another Mac, or one swapped on the ESP,
-is refused. The logic follows omarchy-mac-installer's factory_root_key()."""
+those records, and each must also be found, byte for byte, somewhere in this
+Mac's own iBoot System Container. That proves each record is present there, not
+that it is the active or an authentic one. The logic follows
+omarchy-mac-installer's factory_root_key().
+
+With --check FILE it only says whether FILE is a whole sensor root key: it exits
+3 when FILE is not one, and 1 when it could not tell."""
 
 import argparse
 import hashlib
@@ -20,6 +24,9 @@ import tarfile
 import zlib
 
 RECORD_MAXIMUM = 16 << 20
+# Bounds on the whole archive: members read, and record bytes kept in memory.
+MEMBER_MAXIMUM = 1 << 14
+RETAINED_MAXIMUM = 32 << 20
 # The records the key is rebuilt from; anything else in the cache is skipped.
 RECORDS = ("MSRk-", "seal-", "trustobject-")
 CONTAINER_MAXIMUM = 1 << 30
@@ -119,7 +126,7 @@ def check_root_key(data):
         if len(manifest) < 2 or ia5(data, manifest[0]) != b"IM4M":
             raise ValueError("missing manifest")
     except (ValueError, IndexError) as error:
-        raise Refused(f"the rebuilt key is not a whole sensor root key: {error}") from error
+        raise Refused(f"the key is not a whole sensor root key: {error}") from error
     return data
 
 
@@ -148,9 +155,13 @@ def factory_records(archive):
     archive's com.apple.factorydata directory, read into memory only. Other
     entries there (a subdirectory or record a later macOS adds) are skipped."""
     records = {}
+    members = retained = 0
     try:
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar:
+                members += 1
+                if members > MEMBER_MAXIMUM:
+                    raise Refused(f"{archive} holds more than {MEMBER_MAXIMUM} entries")
                 # asahi-installer archives the cache as com.apple.factorydata/
                 # at the archive's root; nothing elsewhere counts.
                 path = member.name.rstrip("/")
@@ -165,6 +176,9 @@ def factory_records(archive):
                     raise Refused(f"the factory record {name} in {archive} is too large")
                 if name in records:
                     raise Refused(f"{archive} holds the factory record {name} twice")
+                retained += member.size
+                if retained > RETAINED_MAXIMUM:
+                    raise Refused(f"the factory records in {archive} are too large together")
                 with tar.extractfile(member) as fd:
                     records[name] = fd.read(RECORD_MAXIMUM + 1)
     except (OSError, tarfile.TarError, EOFError, zlib.error) as error:
@@ -267,6 +281,24 @@ def apple_silicon():
         return False
 
 
+NOT_WHOLE = 3
+
+
+def check(path):
+    try:
+        with open(path, "rb") as fd:
+            data = fd.read(RECORD_MAXIMUM + 1)
+    except OSError as error:
+        print(f"touchid-root-key: cannot read {path}: {error}", file=sys.stderr)
+        return 1
+    try:
+        check_root_key(data)
+    except Refused as error:
+        print(f"touchid-root-key: {path}: {error}", file=sys.stderr)
+        return NOT_WHOLE
+    return 0
+
+
 def main():
     if not apple_silicon():
         print("touchid-root-key: this is not an Apple Silicon Mac", file=sys.stderr)
@@ -274,8 +306,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--archive", default="/boot/efi/asahi/all_firmware.tar.gz")
     parser.add_argument("--container", default="/dev/disk/by-partlabel/iBootSystemContainer")
-    parser.add_argument("-o", "--output", required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("-o", "--output")
+    action.add_argument("--check", metavar="FILE")
     arguments = parser.parse_args()
+    if arguments.check:
+        return check(arguments.check)
     try:
         records = factory_records(arguments.archive)
         _, record = one(records, "MSRk-")

@@ -51,7 +51,7 @@ elif [[ -f $brcmfmac ]] && grep -Fxq -- "$quirk" "$brcmfmac"; then
   echo "Removed the Intel Mac Broadcom quirk from $brcmfmac; it stops applying at the next reboot"
 fi
 
-# The mpv default up to 0.1.4 lacks gpu-sw, so mpv aborts where the GPU has no
+# The mpv default up to 0.2.2 lacks gpu-sw, so mpv aborts where the GPU has no
 # driver, and tmpfiles never replaces the copy it made. Only a regular file
 # byte-identical to that copy takes the new default; edits and links stay.
 mpv="$root/etc/mpv/mpv.conf"

@@ -42,7 +42,7 @@ tmpfiles "$work/fresh"
 [[ $(setting "$work/fresh" hwdec) == "no" ]] || fail 'a later edit survives the next upgrade'
 pass 'an administrator mpv.conf, or a later edit, is never overwritten'
 
-# omarchy-mac 0.1.4 and earlier copied a default without gpu-sw, which tmpfiles
+# omarchy-mac 0.2.2 and earlier copied a default without gpu-sw, which tmpfiles
 # keeps. omarchy-mac-setup-system replaces that copy only while it is untouched.
 mkdir -p "$work/bin"
 cat >"$work/bin/omarchy-hw-platform" <<'STUB'
@@ -84,10 +84,10 @@ released() {
 released "$work/old"
 chmod 640 "$work/old/etc/mpv/mpv.conf"
 tmpfiles "$work/old"
-cmp -s "$work/old/etc/mpv/mpv.conf" "$work/released.conf" || fail 'tmpfiles alone keeps the 0.1.4 copy'
+cmp -s "$work/old/etc/mpv/mpv.conf" "$work/released.conf" || fail 'tmpfiles alone keeps the 0.2.2 copy'
 setup "$work/old"
 cmp -s "$work/old/etc/mpv/mpv.conf" "$work/old/usr/share/omarchy-mac/mpv/mpv.conf" ||
-  fail 'setup replaces an untouched 0.1.4 mpv default'
+  fail 'setup replaces an untouched 0.2.2 mpv default'
 [[ $(setting "$work/old" gpu-sw) == "yes" ]] || fail 'the replaced default draws in software without a GPU driver'
 [[ $(stat -c %a "$work/old/etc/mpv/mpv.conf") == 640 ]] || fail 'the replaced default keeps its mode'
 [[ -L $work/old/etc/mpv/scripts/mpris.so ]] || fail 'the replacement leaves mpv scripts alone'
@@ -97,24 +97,24 @@ cp "$work/old/etc/mpv/mpv.conf" "$work/expected"
 setup "$work/old"
 cmp -s "$work/old/etc/mpv/mpv.conf" "$work/expected" && ! grep -q 'mpv.conf' "$work/out" ||
   fail 'a second setup run changes and reports nothing' "$(<"$work/out")"
-pass 'an untouched 0.1.4 mpv default takes gpu-sw at setup, once'
+pass 'an untouched 0.2.2 mpv default takes gpu-sw at setup, once'
 
 released "$work/edited"
 sed -i 's/^hwdec=vaapi-copy$/hwdec=no/' "$work/edited/etc/mpv/mpv.conf"
 cp "$work/edited/etc/mpv/mpv.conf" "$work/expected"
 setup "$work/edited"
-cmp -s "$work/edited/etc/mpv/mpv.conf" "$work/expected" || fail 'an edited 0.1.4 default stays'
+cmp -s "$work/edited/etc/mpv/mpv.conf" "$work/expected" || fail 'an edited 0.2.2 default stays'
 cp "$work/released.conf" "$work/edited/etc/mpv/mpv.conf"
 printf '\n' >>"$work/edited/etc/mpv/mpv.conf"
 cp "$work/edited/etc/mpv/mpv.conf" "$work/expected"
 setup "$work/edited"
-cmp -s "$work/edited/etc/mpv/mpv.conf" "$work/expected" || fail 'a 0.1.4 default with one byte added stays'
+cmp -s "$work/edited/etc/mpv/mpv.conf" "$work/expected" || fail 'a 0.2.2 default with one byte added stays'
 released "$work/link"
 mv "$work/link/etc/mpv/mpv.conf" "$work/link-target"
 ln -s "$work/link-target" "$work/link/etc/mpv/mpv.conf"
 setup "$work/link"
 [[ -L $work/link/etc/mpv/mpv.conf ]] && cmp -s "$work/link-target" "$work/released.conf" ||
-  fail 'a link to the 0.1.4 default, and its target, stay'
+  fail 'a link to the 0.2.2 default, and its target, stay'
 released "$work/other"
 PLATFORM=x86 setup "$work/other"
 cmp -s "$work/other/etc/mpv/mpv.conf" "$work/released.conf" || fail 'a machine that is not a Mac is untouched'
