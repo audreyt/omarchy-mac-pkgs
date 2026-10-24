@@ -92,6 +92,11 @@ archive("duplicate.tar.gz", records + [("seal-00008140-001E", seal)])
 archive("linked-seal.tar.gz", [records[0], records[2], records[3]],
         [("com.apple.factorydata/seal-00008140-001E", None, (tarfile.SYMTYPE, "/etc/passwd"))])
 archive("oversized.tar.gz", records + [("trustobject-" + "0" * 64, b"\0" * ((16 << 20) + 1))])
+# The archive's bounds: 16384 entries in all, and 32 MiB of records kept.
+filler_entries = lambda n: [("firmware/filler-%d" % i, b"", None) for i in range(n)]
+archive("at-entry-limit.tar.gz", records, filler_entries((1 << 14) - 1 - len(records)))
+archive("many-entries.tar.gz", records, filler_entries((1 << 14) - len(records)))
+archive("retained.tar.gz", records + [("trustobject-" + c * 64, b"\0" * (12 << 20)) for c in "ABC"])
 # A seal outside com.apple.factorydata is no record, and a later macOS's
 # subdirectory or link in the cache is skipped.
 archive("decoy.tar.gz", records, [("firmware/com.apple.factorydata.old/seal-00008140-DECOY", other_seal, None),
@@ -273,7 +278,8 @@ grep -q "not all in this Mac's iBoot System Container" <<<"$(container=$work/fac
   fail "records not all in this Mac's iBoot System Container are said to be another Mac's"
 for refusal in "current-differs:differs from the named trust bundle" "misnamed-trust:does not match its name" \
   "wrong-payload:not a whole sensor root key" "duplicate:twice" "linked-seal:not a regular file" "oversized:too large" \
-  "no-trust:not all in this Mac's" "no-msrk:not all in this Mac's"; do
+  "no-trust:not all in this Mac's" "no-msrk:not all in this Mac's" "many-entries:more than 16384 entries" \
+  "retained:too large together"; do
   case=${refusal%%:*}
   neo
   if [[ $case == no-trust || $case == no-msrk ]]; then
@@ -288,7 +294,7 @@ for refusal in "current-differs:differs from the named trust bundle" "misnamed-t
 done
 # Only the cache's own MSRk, seal and trust bundle records count; a record
 # straddling the scan's 8 MiB reads is still found.
-for case in decoy unrelated boundary; do
+for case in decoy unrelated boundary at-entry-limit; do
   neo
   if [[ $case == boundary ]]; then
     container=$work/factory/boundary-isc.img

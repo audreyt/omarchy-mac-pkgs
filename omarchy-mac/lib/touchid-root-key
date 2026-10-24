@@ -21,6 +21,9 @@ import tarfile
 import zlib
 
 RECORD_MAXIMUM = 16 << 20
+# Bounds on the whole archive: members read, and record bytes kept in memory.
+MEMBER_MAXIMUM = 1 << 14
+RETAINED_MAXIMUM = 32 << 20
 # The records the key is rebuilt from; anything else in the cache is skipped.
 RECORDS = ("MSRk-", "seal-", "trustobject-")
 CONTAINER_MAXIMUM = 1 << 30
@@ -149,9 +152,13 @@ def factory_records(archive):
     archive's com.apple.factorydata directory, read into memory only. Other
     entries there (a subdirectory or record a later macOS adds) are skipped."""
     records = {}
+    members = retained = 0
     try:
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar:
+                members += 1
+                if members > MEMBER_MAXIMUM:
+                    raise Refused(f"{archive} holds more than {MEMBER_MAXIMUM} entries")
                 # asahi-installer archives the cache as com.apple.factorydata/
                 # at the archive's root; nothing elsewhere counts.
                 path = member.name.rstrip("/")
@@ -166,6 +173,9 @@ def factory_records(archive):
                     raise Refused(f"the factory record {name} in {archive} is too large")
                 if name in records:
                     raise Refused(f"{archive} holds the factory record {name} twice")
+                retained += member.size
+                if retained > RETAINED_MAXIMUM:
+                    raise Refused(f"the factory records in {archive} are too large together")
                 with tar.extractfile(member) as fd:
                     records[name] = fd.read(RECORD_MAXIMUM + 1)
     except (OSError, tarfile.TarError, EOFError, zlib.error) as error:
