@@ -7,9 +7,10 @@ The key is device-private. asahi-installer leaves this Mac's factory records
 on the ESP, in asahi/all_firmware.tar.gz; the key is the MSRk record's IM4P
 under the FDR sealing manifest (seal-<ECID>), with the trust bundle as secb,
 as macOS stores the other records in its factory cache. Every byte comes from
-those records, each of which must also be found in this Mac's own iBoot
-System Container, so an archive from another Mac, or one swapped on the ESP,
-is refused. The logic follows omarchy-mac-installer's factory_root_key()."""
+those records, and each must also be found, byte for byte, somewhere in this
+Mac's own iBoot System Container. That proves each record is present there, not
+that it is the active or an authentic one. The logic follows
+omarchy-mac-installer's factory_root_key()."""
 
 import argparse
 import hashlib
