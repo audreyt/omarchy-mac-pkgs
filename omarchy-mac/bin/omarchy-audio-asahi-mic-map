@@ -40,9 +40,11 @@ ROUTE_CLIENT = 'omarchy-asahi-mic-route'
 DSP = re.compile(r'effect_output\.j[0-9]+-mic')
 # asahi-audio's mono DSP output: AUX0, or MONO since asahi-audio ab1b469.
 DSP_PORTS = ('capture_AUX0', 'capture_MONO')
-# The microphone array's ALSA card, present even when its DSP graph is not.
-ARRAY = re.compile(r'\[AppleJ[0-9]+(HPAI|AOP) *\]')
+# The microphone array's ALSA card, present even when its DSP graph is not,
+# and asahi-audio's WirePlumber rules, which name the cards it builds one for.
+ARRAY = re.compile(r'\[(AppleJ[0-9]+(?:HPAI|AOP)) *\]')
 ASOUND_CARDS = Path('/proc/asound/cards')
+WIREPLUMBER_CONF = Path('/usr/share/wireplumber/wireplumber.conf.d')
 # What the DSP graph is built from. An update that changes them (a plugin the
 # graph lacked) brings no audio event: WirePlumber builds the graph only when
 # the array's node appears, so the mapper restarts it.
@@ -128,10 +130,13 @@ class Audio:
         time.sleep(0.1)
 
     def array(self):
+        # An array card asahi-audio builds a DSP microphone for.
         try:
-            return bool(ARRAY.search(ASOUND_CARDS.read_text()))
+            cards = ARRAY.findall(ASOUND_CARDS.read_text())
+            rules = ''.join(path.read_text(errors='replace') for path in sorted(WIREPLUMBER_CONF.glob('*.conf')))
         except OSError:
             return False
+        return any('"hw:%s,' % card in rules for card in cards)
 
     def updating(self):
         return PACMAN_LOCK.exists() and pacman_running()

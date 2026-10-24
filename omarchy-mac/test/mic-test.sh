@@ -20,7 +20,7 @@ loader = importlib.machinery.SourceFileLoader('mic', str(root / 'bin/omarchy-aud
 spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 # The host's model and sound cards stay out of it.
-m.MODEL = Path('/nonexistent/model'); m.ASOUND_CARDS = Path('/nonexistent/cards')
+m.MODEL = Path('/nonexistent/model'); m.ASOUND_CARDS = Path('/nonexistent/cards'); m.WIREPLUMBER_CONF = Path('/nonexistent/conf.d')
 DSP = 'effect_output.j414-mic'
 EXISTING = 'module-remap-source', 'source_name=omarchy_asahi_mic master=' + DSP + ' channels=2 source_properties=' + m.OWNER + '=existing'
 # The virtual source 0.1.2 mapped into, under the same name.
@@ -907,17 +907,23 @@ with tempfile.TemporaryDirectory() as temporary:
         assert audio.default == DSP and not audio.existing
 print('ok - the DSP microphone is mapped from its AUX0 or MONO port, onto stereo or negotiated MONO capture')
 
-# The array is an Apple HPAI card (M1, M2), or the AOP card on J700; a Mac
-# mini's or a USB card is none, and an unreadable cards file means none.
+# The array is an Apple HPAI card (M1, M2), or the AOP card on J700, that
+# asahi-audio's rules build a DSP microphone for; a Mac mini's or a USB card
+# is none, nor is an array card the rules do not name, or unreadable files.
 with tempfile.TemporaryDirectory() as temporary:
-    cards = Path(temporary) / 'cards'
-    with mock.patch.object(m, 'ASOUND_CARDS', cards):
+    cards = Path(temporary) / 'cards'; conf = Path(temporary) / 'conf.d'; conf.mkdir()
+    (conf / '99-asahi.conf').write_text('{ api.alsa.path = "hw:AppleJ416HPAI,0" }\n{ api.alsa.path = "hw:AppleJ700AOP,1" }\n')
+    with mock.patch.object(m, 'ASOUND_CARDS', cards), mock.patch.object(m, 'WIREPLUMBER_CONF', conf):
         assert not m.Audio().array(), 'a missing cards file is no array'
         for text, expected in ((' 0 [AppleJ416HPAI  ]: aop_audio - MacBook Pro J416 HPAI\n 1 [AppleJ416      ]: macaudio - MacBook Pro J416\n', True),
                                (' 0 [AppleJ700AOP   ]: t8140_aop_audio - MacBook Neo J700 AOP\n', True),
+                               (' 0 [AppleJ274HPAI  ]: aop_audio - Mac mini J274 HPAI\n', False),
                                (' 0 [AppleJ274      ]: macaudio - Mac mini J274\n 1 [Device         ]: USB-Audio - USB Audio Device\n', False)):
             cards.write_text(text)
             assert m.Audio().array() is expected, text
+        cards.write_text(' 0 [AppleJ416HPAI  ]: aop_audio - MacBook Pro J416 HPAI\n')
+        with mock.patch.object(m, 'WIREPLUMBER_CONF', Path(temporary) / 'absent'):
+            assert not m.Audio().array(), 'without asahi-audio rules there is no DSP microphone to expect'
 
 # An update that adds what the DSP graph lacked (triforce-lv2) brings no audio
 # event: once the update ends, a missing DSP with an array present restarts
@@ -1011,6 +1017,14 @@ with tempfile.TemporaryDirectory() as temporary:
     with mock.patch.object(m.time, 'monotonic', return_value=730.0):
         pass_(audio)
         assert audio.restarts == 1 and not m.installed['pending'], 'one restart once the first look is due'
+    # A new runtime directory (the next login) looks once again, by design:
+    # a microphone still missing 30 s into a session gets one restart.
+    reset(); record.unlink()
+    with mock.patch.object(m.time, 'monotonic', return_value=900.0):
+        watcher(); pass_(audio)
+    with mock.patch.object(m.time, 'monotonic', return_value=930.0):
+        pass_(audio); pass_(audio)
+        assert audio.restarts == 2 and not m.installed['pending'], 'once per session start'
     reset()
     # A pending repair waits for a later pacman transaction to end, and a
     # deferred one keeps its retry time across a reload of the watcher.
