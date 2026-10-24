@@ -59,6 +59,18 @@ Everything below the desktop is the Asahi Linux project's work, and the authorit
 - [M2 feature support](https://asahilinux.org/docs/platform/feature-support/m2/)
 - [Overview across chips](https://asahilinux.org/docs/platform/feature-support/overview/)
 
+### M3 MacBook Air (edge testers)
+
+M3 Macs are not part of the first release. On an M3 MacBook Air installed from an edge image, the native display needs the line `chosen.asahi,t8122-dcp=1` in `/etc/m1n1.conf`, and a fresh install writes it when its `m1n1-aurora` is 1.6.1.aurora20-4 or newer. An M3 Air installed before that keeps its old boot setup. Once `pacman -Q m1n1-aurora` reports 1.6.1.aurora20-4 or newer, add the line yourself, unless `/etc/m1n1.conf` already has one, and rebuild m1n1's boot image, then reboot:
+
+```bash
+grep -Eq '^[[:space:]]*chosen\.asahi,t8122-dcp=' /etc/m1n1.conf 2>/dev/null ||
+  printf '\nchosen.asahi,t8122-dcp=1\n' | sudo tee -a /etc/m1n1.conf
+sudo update-m1n1
+```
+
+USB-C and DisplayPort external displays stay off on an M3 Air for now, since the line hands over only the built-in one. With an older `m1n1-aurora`, 1.6.1.aurora20-3 included, the line black-screens the Mac at boot. If that happens, remove it from `/etc/m1n1.conf` and run `sudo update-m1n1` again from a shell on this install that doesn't need the display, such as SSH if you set it up beforehand.
+
 Anything marked work in progress there, Thunderbolt device support among them, is work in progress here too. The Aurora kernel adds the display, camera and USB4 work described above.
 
 ## Reporting a problem
