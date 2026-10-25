@@ -2,7 +2,7 @@
 # Says, without loading the Secure Enclave driver, whether Touch ID can be set
 # up here: "none" (no sensor), "available", or "unsupported:<reason>". With
 # "sensor" it prints the sensor's device-tree node instead, and with "keybag"
-# "unfinished" when the key store record is an unfinished creation's.
+# what the key store record says (below).
 
 tree=${OMARCHY_MAC_TOUCHID_TREE:-/proc/device-tree}
 firmware=${OMARCHY_MAC_TOUCHID_FIRMWARE:-/usr/lib/firmware}
@@ -31,18 +31,28 @@ can_extract() {
   [[ -x $extractors/$1 ]] && command -v "$python" >/dev/null
 }
 
-# The driver writes this record (magic, version 2, state 0) before it asks the
+# The driver writes the record (magic, version 2, state 0) before it asks the
 # enclave to create the key store, and completes it once the enclave answers.
-# While it stands the driver refuses to create another (EEXIST), since the
-# enclave may hold one it never named; nothing here removes it.
-unfinished_keybag() {
-  [[ -f $keybag && $(od -An -v -t x1 -N 24 "$keybag" 2>/dev/null | tr -d ' \n') == \
-    4150504c452d5345502d4b42414730310200000000000000 ]]
+# "unfinished" while it stands: the driver then refuses to create another
+# (EEXIST), since the enclave may hold one it never named, and nothing here
+# removes it. "refused" (state 2): the enclave refused the creation, so none
+# exists and the driver tries again. "present" for anything else there.
+keybag_record() {
+  local head
+  [[ -e $keybag ]] || return 0
+  head=$(od -An -v -t x1 -N 24 "$keybag" 2>/dev/null | tr -d ' \n')
+  if [[ ${head:0:40} != 4150504c452d5345502d4b424147303102000000 ]]; then
+    echo present
+  elif [[ ${head:40} == 00000000 ]]; then
+    echo unfinished
+  elif [[ ${head:40} == 02000000 ]]; then
+    echo refused
+  else
+    echo present
+  fi
 }
 if [[ ${1:-} == "keybag" ]]; then
-  if unfinished_keybag; then
-    echo unfinished
-  fi
+  keybag_record
   exit 0
 fi
 
@@ -96,7 +106,7 @@ if compatible apple,t8140 && ! installed apple/msrk-j700.bin &&
   echo unsupported:no-root-key
   exit 0
 fi
-if unfinished_keybag; then
+if [[ $(keybag_record) == "unfinished" ]]; then
   echo unsupported:unfinished-keybag
   exit 0
 fi
