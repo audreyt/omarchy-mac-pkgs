@@ -71,6 +71,7 @@ run_owner_setup() {
     boot_writable() { :; }
     serial_send() { printf '%s|%s\n' "${1//$'\r'/\\r}" "$serial_match" >>"$test_tmp/sent"; }
     serial_type() { serial_send "$1"$'\r'; }
+    # shellcheck disable=SC2034 # read by the sourced harness functions
     owner_user=owner owner_password=secret boot_timeout=1 serial_log=$1 serial_pos=0 serial_match=
     sleep 0 & qemu_pid=$!; wait "$qemu_pid"
     source "$test_tmp/owner-setup.sh"
