@@ -51,6 +51,16 @@ case $status in
   none | "")
     exit 0
     ;;
+  unsupported:unfinished-keybag)
+    # The record stays: removing it could strand a key store the enclave holds.
+    echo "Touch ID can't be set up on this Mac, so setup goes on with any other"
+    echo "fingerprint reader. An earlier Touch ID setup never finished creating"
+    echo "its key store: /var/lib/aurora-sep-keybag.bin records that the Secure"
+    echo "Enclave driver started creating it, not that it finished. The enclave"
+    echo "may hold a key store the driver never named, so the driver won't create"
+    echo "another while that record exists. See omacom/linux-aurora#209."
+    exit 0
+    ;;
   *)
     echo "Touch ID can't be used on this Mac yet ($status), so setup goes on with"
     echo "any other fingerprint reader."
