@@ -3,7 +3,7 @@
 # omarchy-lifecycle-dispatch setup-boot [image-first-boot]. The platform setup
 # leaf runs this at the end of hardware setup, before omarchy-mac's
 # setup-system: the GRUB console settings, then the Limine activation on a Mac
-# that opted in, then the M3 Air display default in m1n1.conf. On an image's
+# that opted in, then the M3 Air display and GPU defaults in m1n1.conf. On an image's
 # first boot the Limine leaf asks for the boot rebuild the deferred setup does
 # once after its last step, rather than building the UKI itself. Every leaf
 # re-checks the platform.
