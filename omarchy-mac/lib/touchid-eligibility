@@ -73,6 +73,20 @@ if ! installed "$calibration" && { compatible apple,t8140 || compatible apple,t8
   echo unsupported:no-calibration
   exit 0
 fi
+# A 130427-byte J715 FSC2 body worked on one reference Mac.
+# Size rejects other-sized inputs, not another Mac's or forged data.
+# Check every lookup candidate so a good copy cannot hide a malformed shadow.
+if compatible apple,t8132; then
+  for directory in "$firmware" "$firmware/vendor" "$firmware/updates"; do
+    calibration_path=$directory/$calibration
+    if [[ -e $calibration_path || -L $calibration_path ]]; then
+      if [[ ! -f $calibration_path || ! -r $calibration_path ]] || [[ $(wc -c <"$calibration_path") != 130427 ]]; then
+        echo unsupported:invalid-calibration
+        exit 0
+      fi
+    fi
+  done
+fi
 # The Neo's sensor key is rebuilt once the owner agrees, by touchid-root-key
 # (Python), from the factory records asahi-installer leaves on the ESP.
 if compatible apple,t8140 && ! installed apple/msrk-j700.bin &&

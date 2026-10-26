@@ -207,7 +207,7 @@ machine apple,j713 apple,t8132 apple,arm-platform
 machine apple,j715 apple,t8132 apple,arm-platform
 [[ $(eligibility) == "unsupported:no-calibration" ]] || fail 'J715 never substitutes the container calibration'
 mkdir -p "$fixture/firmware/vendor/apple"
-printf FSC2 >"$fixture/firmware/vendor/apple/mesa_calibration.bin"
+truncate -s 130427 "$fixture/firmware/vendor/apple/mesa_calibration.bin"
 cp "$work/factory/key.bin" "$fixture/firmware/vendor/apple/msrk-j700.bin"
 [[ $(eligibility) == "unsupported:no-root-key" ]] || fail "the Neo's key does not qualify J715"
 cp "$work/factory/j715-msrk.bin" "$fixture/firmware/vendor/apple/msrk-j715.bin"
@@ -220,7 +220,7 @@ cmp -s "$fixture/firmware/vendor/apple/msrk-j715.bin" "$work/factory/j715-msrk.b
 [[ -f $fixture/etc/touchid-on ]] || fail 'J715 records boot-time enablement'
 machine apple,j715 apple,t8132 apple,arm-platform
 mkdir -p "$fixture/firmware/vendor/apple"
-printf FSC2 >"$fixture/firmware/vendor/apple/mesa_calibration.bin"
+truncate -s 130427 "$fixture/firmware/vendor/apple/mesa_calibration.bin"
 printf incomplete >"$fixture/firmware/vendor/apple/msrk-j715.bin"
 ! out=$(run touchid-enable 2>&1) && [[ ! -s $fixture/calls && ! -e $fixture/etc/touchid-on ]] ||
   fail 'an incomplete J715 key fails before loading or enabling the driver' "$out"
@@ -638,6 +638,24 @@ touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf ]] &&
   grep -q 'key store for Linux stays' "$fixture/out" || fail "turning it off removes the owner's agreement and says the key store stays"
 PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >/dev/null 2>&1 || fail 'turning it off twice is fine'
+# Refusing an administrator-owned PAM configuration must not keep consent.
+mkdir -p "$fixture/pam" "$fixture/etc" "$fixture/firmware/updates/apple"
+printf 'administrator PAM\n' >"$fixture/pam/custom"
+ln -s custom "$fixture/pam/sddm"
+touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
+cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"
+! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 &&
+  [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf && -L $fixture/pam/sddm && -z $(key_copies) ]] &&
+  [[ $(<"$fixture/pam/custom") == "administrator PAM" ]] ||
+  fail 'PAM refusal still removes boot consent and preserves administrator configuration' "$(<"$fixture/out")"
+rm "$fixture/pam/sddm" "$fixture/pam/custom"
+printf 'administrator owned policy\n' >"$fixture/pam/omarchy-mac-touchid"
+touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
+! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 &&
+  [[ ! -e $fixture/etc/touchid-on && ! -e $fixture/etc/modprobe.conf ]] &&
+  [[ $(<"$fixture/pam/omarchy-mac-touchid") == "administrator owned policy" ]] ||
+  fail 'edited owned PAM policy is preserved while boot consent is removed' "$(<"$fixture/out")"
+rm "$fixture/pam/omarchy-mac-touchid"
 # A Neo's sensor key goes too, since turning Touch ID on again rebuilds it.
 mkdir -p "$fixture/firmware/updates/apple" "$fixture/etc"
 cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"
