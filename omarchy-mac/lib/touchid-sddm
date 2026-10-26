@@ -67,8 +67,17 @@ def write_atomic(path: Path, content: str) -> None:
 
 
 def auth_lines(content: str) -> list[tuple[str, ...]]:
-    return [tuple(fields) for line in content.splitlines()
-            if (fields := line.split()) and fields[0] in ("auth", "-auth")]
+    auth: list[tuple[str, ...]] = []
+    for line in content.splitlines():
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        kind = fields[0].lower()
+        if kind in ("auth", "-auth"):
+            auth.append(tuple(fields))
+        elif kind not in ("account", "-account", "password", "-password", "session", "-session"):
+            raise Refused("unrecognized PAM module type")
+    return auth
 
 
 def configure(directory: Path, enable: bool) -> None:

@@ -68,6 +68,21 @@ cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'custom system-auth
 cp "$work/system-auth" "$OMARCHY_MAC_TOUCHID_PAM/system-auth"
 pass 'inherited authentication requirements are preserved'
 
+for name in sddm system-login system-auth; do
+  cp "$OMARCHY_MAC_TOUCHID_PAM/$name" "$work/case-original"
+  for kind in AUTH Auth -AUTH --auth not-a-pam-type; do
+    printf '%s required pam_deny.so\n' "$kind" >>"$OMARCHY_MAC_TOUCHID_PAM/$name"
+    cp "$OMARCHY_MAC_TOUCHID_PAM/sddm" "$work/case-sddm"
+    cp "$OMARCHY_MAC_TOUCHID_PAM/$name" "$work/case-source"
+    ! python3 -I "$helper" enable 2>"$work/error" || fail 'case-variant authentication rules must be refused'
+    cmp "$work/case-sddm" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'case-variant refusal changed SDDM'
+    cmp "$work/case-source" "$OMARCHY_MAC_TOUCHID_PAM/$name" || fail 'case-variant refusal changed the source policy'
+    [[ ! -e $OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid ]] || fail 'case-variant refusal installed a policy'
+    cp "$work/case-original" "$OMARCHY_MAC_TOUCHID_PAM/$name"
+  done
+done
+pass 'case-variant authentication rules are refused without writes'
+
 printf 'auth required pam_deny.so\n' >>"$OMARCHY_MAC_TOUCHID_PAM/sddm"
 cp "$OMARCHY_MAC_TOUCHID_PAM/sddm" "$work/custom"
 ! python3 -I "$helper" enable 2>"$work/error" || fail 'custom auth rules must be preserved'
