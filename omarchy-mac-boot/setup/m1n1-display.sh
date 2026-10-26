@@ -3,9 +3,11 @@
 # boot.bin. An m1n1 without the display's opt-in gate black-screens these Macs.
 omarchy-hw-apple-silicon || return 0
 [[ ${OMARCHY_MAC_IMAGE_BUILD:-} != "1" ]] || return 0
-# setup-boot clears the environment, so only a booted systemd tells the leaf it
-# is not in a chroot (an image build's or an installer's).
+# setup-boot and the update hook clear the environment, so only a booted systemd
+# outside a chroot tells the leaf it is not in an image build or an installer;
+# arch-chroot bind-mounts the host's /run, so the directory alone is not enough.
 [[ -d ${OMARCHY_SYSTEMD_RUN:-/run/systemd/system} ]] || return 0
+systemd-detect-virt --quiet --chroot 2>/dev/null && return 0
 
 (
   set -uo pipefail
@@ -46,16 +48,19 @@ omarchy-hw-apple-silicon || return 0
     echo "m1n1-display: m1n1-aurora $installed predates the T8122 display opt-in ($minimum_m1n1); leaving $config alone"
     exit 0
   fi
-  # A line the owner wrote, for either value, is theirs to keep.
-  display=
-  [[ ! -r $config ]] || display=$(sed -nE "s/^[[:space:]]*${key//./\\.}=([^[:space:]]*).*/\\1/p" "$config" | tail -n 1)
+  # A line the owner wrote, for any value, is theirs to keep. The GPU goes in only
+  # beside a display line that is exactly 1 (every one of them), and never next to
+  # an owner's GPU or native-profile line.
+  owner_display=() display_on=1
+  [[ ! -r $config ]] || mapfile -t owner_display < <(sed -nE "s/^[[:space:]]*${key//./\\.}=//p" "$config")
   wanted=()
-  if [[ -z $display ]]; then
+  if (( ${#owner_display[@]} == 0 )); then
     wanted+=("$key")
-    display=1
   fi
-  # The GPU starts only beside the display handoff, and any GPU or native-profile line means the owner chose its setup.
-  if [[ $display == "1" ]] && ! { [[ -r $config ]] && grep -Eq '^[[:space:]]*chosen\.asahi,(t8122-gpu|j61[35]-25g83)[^=]*=' "$config"; }; then
+  for value in "${owner_display[@]}"; do
+    [[ $value == "1" ]] || display_on=0
+  done
+  if (( display_on )) && ! { [[ -r $config ]] && grep -Eq '^[[:space:]]*chosen\.asahi,(t8122-gpu|j61[35]-25g83)[^=]*=' "$config"; }; then
     wanted+=("${gpu_keys[@]}")
   fi
   (( ${#wanted[@]} > 0 )) || exit 0

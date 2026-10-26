@@ -10,6 +10,8 @@ trap 'rm -rf "$work"' EXIT
 stub=$work/bin
 mkdir -p "$stub"
 printf '#!/bin/bash\n[[ ${NOT_APPLE:-} != 1 ]]\n' >"$stub/omarchy-hw-apple-silicon"
+# arch-chroot bind-mounts the host's /run: only systemd-detect-virt --chroot tells.
+printf '#!/bin/bash\n[[ $* == "--quiet --chroot" && ${CHROOT:-} == 1 ]]\n' >"$stub/systemd-detect-virt"
 # A vercmp that fails after printing a number, prints text with a number in it, or prints nothing.
 fake_vercmp=$work/fake-vercmp
 mkdir -p "$fake_vercmp"
@@ -87,8 +89,11 @@ done
 printf 'chosen.asahi,t8122-gpu=0\n' >"$work/etc/m1n1.conf"
 run && has_switches chosen.asahi,t8122-dcp=1 chosen.asahi,t8122-gpu=0 && ! grep -q 'power-standin' "$work/etc/m1n1.conf" ||
   fail "an owner's GPU off still gets the display, and nothing else" "$(conf)"
-printf 'chosen.asahi,t8122-dcp=0\n' >"$work/etc/m1n1.conf"
-run && [[ $(conf) == 'chosen.asahi,t8122-dcp=0' && ! -s $CALLS ]] || fail "the GPU never starts without the display handoff" "$(conf)"
+for owned in 'chosen.asahi,t8122-dcp=0' 'chosen.asahi,t8122-dcp=' 'chosen.asahi,t8122-dcp= 0' $'chosen.asahi,t8122-dcp=1\nchosen.asahi,t8122-dcp=0'; do
+  printf '%s\n' "$owned" >"$work/etc/m1n1.conf"
+  run && [[ $(conf) == "$owned" && ! -s $CALLS ]] ||
+    fail "the GPU never starts beside a display line that is not exactly 1: '$owned'" "$(conf)"
+done
 rm -rf "$work/etc"
 pass "the GPU switches reach Airs that had only the display, and the owner's GPU choices are kept"
 
@@ -117,6 +122,7 @@ VERSION= check_untouched 'without m1n1-aurora nothing is written'
 MINIMUM= check_untouched 'until the minimum is known nothing is written'
 M1N1_PACKAGE=m1n1-other check_untouched 'a package that only provides m1n1-aurora is not taken for it'
 SYSTEMD_RUN=$work/no-such-run check_untouched "an image build's chroot, with no booted systemd, gets nothing written"
+CHROOT=1 check_untouched "an arch-chroot that sees the host's /run/systemd/system gets nothing written"
 for result in fails garbage empty; do
   VERCMP=$result check_untouched "a vercmp that $result writes nothing: the gate fails closed"
 done
