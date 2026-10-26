@@ -22,7 +22,7 @@ The next boot unlocks the disk with your password. At the prompt the built-in ke
 
 After you explicitly enable Touch ID, its driver starts at each boot and restores the fingerprints already enrolled for Linux. On a stock SDDM login screen, submit your username and touch the sensor when prompted. You can still use your password: if the reader is unavailable or the fingerprint attempt fails, authentication continues with the original password stack. A customized SDDM authentication stack is left for its administrator rather than rewritten.
 
-On the 15-inch M4 Air (J715), support additionally requires a compatible kernel and this Mac's own FDR root key and FSC2 calibration. They are private, are not shipped in a package, and are not interchangeable with another Mac's files. A working match immediately after enrollment is not proof that restoring it after shutdown works. J715 cold-boot and login qualification is still pending for this candidate.
+On the 15-inch M4 Air (J715), support additionally requires a compatible kernel and this Mac's own FDR root key and FSC2 calibration. They are private, are not shipped in a package, and are not interchangeable with another Mac's files. The earlier J715 port has restored an existing enrollment and completed fingerprint login after a cold boot; the current upstream kernel still needs its own qualification.
 
 Fingerprint login does not unlock an encrypted root disk or a password-encrypted desktop keyring. Keep using the disk password at the early boot prompt. Turning Touch ID off removes its SDDM authentication include, but does not delete the Linux key store.
 
