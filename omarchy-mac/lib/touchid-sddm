@@ -49,7 +49,8 @@ def read_regular(path: Path) -> str | None:
         return None
     if not stat.S_ISREG(mode):
         raise Refused(f"{path} is not a regular file")
-    return path.read_text(encoding="utf-8")
+    with path.open(encoding="utf-8", newline="") as stream:
+        return stream.read()
 
 
 def write_atomic(path: Path, content: str) -> None:

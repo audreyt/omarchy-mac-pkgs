@@ -47,6 +47,14 @@ cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'disabling restores
 python3 -I "$helper" disable
 pass 'SDDM enablement is optional, idempotent and reversible'
 
+sed 's/$/\r/' "$work/original" >"$work/crlf"
+cp "$work/crlf" "$OMARCHY_MAC_TOUCHID_PAM/sddm"
+python3 -I "$helper" enable
+python3 -I "$helper" disable
+cmp "$work/crlf" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'disabling must preserve original line endings'
+cp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm"
+pass 'SDDM removal preserves the original line endings'
+
 cp "$OMARCHY_MAC_TOUCHID_PAM/system-login" "$work/system-login"
 printf 'auth required pam_deny.so\n' >>"$OMARCHY_MAC_TOUCHID_PAM/system-login"
 ! python3 -I "$helper" enable 2>"$work/error" || fail 'an inherited mandatory auth rule must not be bypassed'
