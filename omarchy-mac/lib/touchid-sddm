@@ -1,0 +1,126 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: MIT
+"""Add or remove Touch ID in a stock SDDM PAM stack under the Touch ID lock."""
+
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+
+PREFIX = "# omarchy-mac Touch ID\n" "auth include omarchy-mac-touchid\n"
+POLICY = """#%PAM-1.0
+auth requisite pam_shells.so
+auth requisite pam_nologin.so
+auth required pam_faillock.so preauth
+auth sufficient pam_fprintd.so max-tries=3 timeout=10
+"""
+AUTH = {
+    ("auth", "include", "system-login"),
+    ("-auth", "optional", "pam_gnome_keyring.so"),
+    ("-auth", "optional", "pam_kwallet5.so"),
+    ("-auth", "optional", "pam_kwallet6.so"),
+}
+LOGIN_AUTH = [
+    ("auth", "required", "pam_shells.so"),
+    ("auth", "requisite", "pam_nologin.so"),
+    ("auth", "include", "system-auth"),
+]
+SYSTEM_AUTH = [
+    ("auth", "required", "pam_faillock.so", "preauth"),
+    ("-auth", "[success=2", "default=ignore]", "pam_systemd_home.so"),
+    ("auth", "[success=1", "default=bad]", "pam_unix.so", "try_first_pass", "nullok"),
+    ("auth", "[default=die]", "pam_faillock.so", "authfail"),
+    ("auth", "optional", "pam_permit.so"),
+    ("auth", "required", "pam_env.so"),
+    ("auth", "required", "pam_faillock.so", "authsucc"),
+]
+
+
+class Refused(Exception):
+    """The existing PAM configuration is not one this helper owns."""
+
+
+def read_regular(path: Path) -> str | None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        raise Refused(f"{path} is not a regular file")
+    return path.read_text(encoding="utf-8")
+
+
+def write_atomic(path: Path, content: str) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o644)
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def auth_lines(content: str) -> list[tuple[str, ...]]:
+    return [tuple(fields) for line in content.splitlines()
+            if (fields := line.split()) and fields[0] in ("auth", "-auth")]
+
+
+def configure(directory: Path, enable: bool) -> None:
+    if not directory.exists():
+        return
+    if not stat.S_ISDIR(directory.lstat().st_mode):
+        raise Refused(f"{directory} is not a regular directory")
+    sddm = directory / "sddm"
+    policy = directory / "omarchy-mac-touchid"
+    original = read_regular(sddm)
+    existing_policy = read_regular(policy)
+    if existing_policy not in (None, POLICY):
+        raise Refused(f"{policy} was changed; leaving it alone")
+    if original is None:
+        return
+    active = original.startswith(PREFIX)
+    original = original.removeprefix(PREFIX)
+    if "omarchy-mac-touchid" in original:
+        raise Refused(f"{sddm} has a custom Touch ID entry")
+    if enable:
+        auth = auth_lines(original)
+        if auth.count(("auth", "include", "system-login")) != 1 or any(
+                entry not in AUTH for entry in auth):
+            raise Refused(f"{sddm} is not the stock system-login stack")
+        for name, expected in (("system-login", LOGIN_AUTH), ("system-auth", SYSTEM_AUTH)):
+            content = read_regular(directory / name)
+            if content is None or auth_lines(content) != expected:
+                raise Refused(f"{directory / name} has custom authentication requirements")
+        if existing_policy is None:
+            write_atomic(policy, POLICY)
+        if not active:
+            write_atomic(sddm, PREFIX + original)
+    else:
+        if active:
+            write_atomic(sddm, original)
+        if existing_policy is not None:
+            policy.unlink()
+
+
+def main() -> int:
+    if subprocess.run(["omarchy-hw-apple-silicon"], check=False).returncode != 0:
+        return 0
+    if len(sys.argv) != 2 or sys.argv[1] not in ("enable", "disable"):
+        print("Usage: touchid-sddm enable|disable", file=sys.stderr)
+        return 2
+    directory = Path(os.environ.get("OMARCHY_MAC_TOUCHID_PAM", "/etc/pam.d"))
+    try:
+        configure(directory, sys.argv[1] == "enable")
+    except (OSError, UnicodeError, Refused) as error:
+        print(f"touchid-sddm: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

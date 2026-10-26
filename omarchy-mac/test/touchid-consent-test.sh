@@ -32,6 +32,7 @@ pass 'the status and load units and the enable and disable entrypoints are stage
 
 fixture=$work/fixture
 tree=$fixture/tree
+export OMARCHY_MAC_TOUCHID_PAM=$fixture/pam
 mkdir -p "$fixture/bin" "$fixture/extractors"
 printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/omarchy-hw-apple-silicon"
 # The stub keeps the driver options it was loaded with, as modprobe reads them.
@@ -124,6 +125,8 @@ image = der(0x30, der(0x16, b"IMG4") + im4p + der(0xA0, seal))
 with open(os.path.join(out, "key.bin"), "wb") as fd:
     fd.write(der(0x30, der(0x16, b"comb") + der(0x30, der(0x16, b"fdrd") + der(0x04, image))
                        + der(0x30, der(0x16, b"secb") + der(0x04, trust))))
+with open(os.path.join(out, "j715-msrk.bin"), "wb") as fd:
+    fd.write(bytes(index % 251 for index in range(10848)))
 PY
 python3 -I "$work/factory.py" "$work/factory"
 # Any copy of the sensor key under the fixture other than the one named.
@@ -155,6 +158,7 @@ run() {
     OMARCHY_MAC_TOUCHID_OPTIONS=$fixture/etc/modprobe.conf OMARCHY_MAC_TOUCHID_MODULE=$fixture/module \
     OMARCHY_MAC_TOUCHID_STATUS=$fixture/run/touchid OMARCHY_MAC_TOUCHID_HELPERS=$ROOT/lib \
     OMARCHY_MAC_TOUCHID_NODE=$fixture/sep-bio OMARCHY_MAC_TOUCHID_KEYBAG=$fixture/keybag \
+    OMARCHY_MAC_TOUCHID_PAM=$fixture/pam \
     OMARCHY_MAC_TOUCHID_ESP=$fixture/esp OMARCHY_MAC_TOUCHID_CONTAINER=${container:-$work/factory/isc.img} \
     OMARCHY_MAC_TOUCHID_PYTHON=${python:-python3} "$ROOT/lib/$1" "${@:2}"
 }
@@ -195,6 +199,32 @@ mkdir -p "$fixture/firmware/updates/apple"
 cp "$work/factory/key.bin" "$fixture/firmware/updates/apple/msrk-j700.bin"
 [[ $(eligibility) == "available" ]] || fail "a Neo whose sensor key is installed needs nothing else"
 pass 'only a Mac whose setup can finish is available'
+
+# The J715 has no supported automatic FSC2/MSRk extractor. Neither another M4
+# board nor the Neo's key qualifies it, and checking eligibility writes nothing.
+machine apple,j713 apple,t8132 apple,arm-platform
+[[ $(eligibility) == "unsupported:board" ]] || fail 'an unqualified M4 board stays unsupported'
+machine apple,j715 apple,t8132 apple,arm-platform
+[[ $(eligibility) == "unsupported:no-calibration" ]] || fail 'J715 never substitutes the container calibration'
+mkdir -p "$fixture/firmware/vendor/apple"
+printf FSC2 >"$fixture/firmware/vendor/apple/mesa_calibration.bin"
+cp "$work/factory/key.bin" "$fixture/firmware/vendor/apple/msrk-j700.bin"
+[[ $(eligibility) == "unsupported:no-root-key" ]] || fail "the Neo's key does not qualify J715"
+cp "$work/factory/j715-msrk.bin" "$fixture/firmware/vendor/apple/msrk-j715.bin"
+[[ $(eligibility) == "available" && ! -s $fixture/calls ]] || fail 'a prepared J715 is available without writes'
+echo ready >"$fixture/activation"
+out=$(run touchid-enable 2>&1) || fail 'J715 uses its installed FDR key' "$out"
+! grep -Fxq calibration "$fixture/calls" || fail 'J715 never carves a replacement calibration'
+cmp -s "$fixture/firmware/vendor/apple/msrk-j715.bin" "$work/factory/j715-msrk.bin" ||
+  fail 'J715 keeps the supplied key unchanged'
+[[ -f $fixture/etc/touchid-on ]] || fail 'J715 records boot-time enablement'
+machine apple,j715 apple,t8132 apple,arm-platform
+mkdir -p "$fixture/firmware/vendor/apple"
+printf FSC2 >"$fixture/firmware/vendor/apple/mesa_calibration.bin"
+printf incomplete >"$fixture/firmware/vendor/apple/msrk-j715.bin"
+! out=$(run touchid-enable 2>&1) && [[ ! -s $fixture/calls && ! -e $fixture/etc/touchid-on ]] ||
+  fail 'an incomplete J715 key fails before loading or enabling the driver' "$out"
+pass 'J715 keeps private factory inputs and refuses missing or incomplete inputs before enabling'
 
 # At boot the status says so for the detector, and never loads the driver.
 machine apple,j414c apple,t6021 apple,arm-platform
@@ -521,6 +551,7 @@ for name in enable-fingerprint disable-fingerprint; do
   sed -e "s|/run/omarchy-mac/touchid|$fixture/run/touchid|g" -e "s|/var/lib/aurora-sep-keybag.bin|$fixture/keybag|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-enable|$fixture/bin/enable-stub|g" -e "s|/etc/omarchy-mac/touchid-on|$fixture/etc/touchid-on|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-eligibility|$fixture/bin/eligibility-stub|g" \
+    -e "s|/usr/lib/omarchy-mac/touchid-sddm|$ROOT/lib/touchid-sddm|g" \
     -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" -e "s|/usr/lib/firmware/updates/|$fixture/firmware/updates/|g" \
     -e "s|/proc/device-tree/compatible|$tree/compatible|g" -e "s|flock -w 300|flock -w 0|" "$ROOT/entrypoints/$name" >"$entry/$name"
   chmod +x "$entry/$name"

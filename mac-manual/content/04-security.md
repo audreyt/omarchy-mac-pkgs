@@ -18,6 +18,14 @@ Owner provisioning then asks for your name and password, as on x86. On an encryp
 
 The next boot unlocks the disk with your password. At the prompt the built-in keyboard and trackpad work, because their drivers are loaded early in the initramfs. A Bluetooth keyboard does not, just as on x86: use the built-in keyboard or a wired one.
 
+## Touch ID login
+
+After you explicitly enable Touch ID, its driver starts at each boot and restores the fingerprints already enrolled for Linux. On a stock SDDM login screen, submit your username and touch the sensor when prompted. You can still use your password: if the reader is unavailable or the fingerprint attempt fails, authentication continues with the original password stack. A customized SDDM authentication stack is left for its administrator rather than rewritten.
+
+On the 15-inch M4 Air (J715), support additionally requires a compatible kernel and this Mac's own FDR root key and FSC2 calibration. They are private, are not shipped in a package, and are not interchangeable with another Mac's files. A working match immediately after enrollment is not proof that restoring it after shutdown works. J715 cold-boot and login qualification is still pending for this candidate.
+
+Fingerprint login does not unlock an encrypted root disk or a password-encrypted desktop keyring. Keep using the disk password at the early boot prompt. Turning Touch ID off removes its SDDM authentication include, but does not delete the Linux key store.
+
 ## Changing passwords
 
 Change passwords under _Update > Password_ in the Omarchy menu, as on x86. On a Mac your disk password and your login password start out the same, but each changes on its own: _Drive Encryption_ changes only the disk password, and _User_ only the login password. A disk password change is recorded step by step, so an interruption resumes rather than leaving the disk half changed. If you no longer know your password, see the next section.
