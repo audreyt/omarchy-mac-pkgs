@@ -2,8 +2,8 @@
 set -euo pipefail
 source "$(dirname "$0")/base-test.sh"
 
-# setup/m1n1-display.sh writes the M3 Air display opt-in into m1n1.conf and
-# rebuilds boot.bin, only on a J613 or J615 whose m1n1-aurora has the gate.
+# setup/m1n1-display.sh writes the M3 Air display and GPU switches into m1n1.conf
+# and rebuilds boot.bin, only on a J613 or J615 whose m1n1-aurora has the gate.
 command -v vercmp >/dev/null || { printf 'skip - m1n1 display default: vercmp is not installed\n'; exit 0; }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -53,18 +53,44 @@ run() {
       source "$1"' _ "$ROOT/setup/m1n1-display.sh" >"$work/out" 2>&1
 }
 conf() { cat "$work/etc/m1n1.conf" 2>/dev/null || echo absent; }
+switches=("chosen.asahi,t8122-dcp=1" "chosen.asahi,t8122-gpu=1" "chosen.asahi,t8122-gpu-power-standin=1" "chosen.asahi,t8122-gpu-fuse-leakage=1")
+# has_switches LINE...: m1n1.conf has each line exactly once.
+has_switches() {
+  local line
+  for line in "$@"; do
+    (( $(grep -Fxc "$line" "$work/etc/m1n1.conf" 2>/dev/null) == 1 )) || return 1
+  done
+}
 
 machine apple,j613 apple,t8122 apple,arm-platform
 run || fail 'a fresh M3 Air takes the display default' "$(cat "$work/out")"
-grep -Fxq 'chosen.asahi,t8122-dcp=1' "$work/etc/m1n1.conf" && [[ $(<"$CALLS") == update-m1n1 ]] ||
-  fail 'the opt-in is written and boot.bin rebuilt' "$(conf) / $(cat "$CALLS")"
+has_switches "${switches[@]}" && [[ $(<"$CALLS") == update-m1n1 ]] ||
+  fail 'the display, GPU and power handoff switches are written and boot.bin rebuilt once' "$(conf) / $(cat "$CALLS")"
 [[ $(stat -c %a "$work/etc/m1n1.conf") == 644 ]] || fail 'm1n1.conf is world-readable, as update-m1n1 reads it'
 before=$(conf)
 run && [[ $(conf) == "$before" && ! -s $CALLS ]] || fail 'a rerun changes nothing and rebuilds nothing'
 machine apple,j615 apple,t8122 apple,arm-platform
 rm -rf "$work/etc"
-run && grep -Fxq 'chosen.asahi,t8122-dcp=1' "$work/etc/m1n1.conf" || fail 'the 15-inch M3 Air takes it too'
-pass 'an M3 Air gets the native display in m1n1.conf and boot.bin, once'
+run && has_switches "${switches[@]}" || fail 'the 15-inch M3 Air takes them too' "$(conf)"
+pass 'an M3 Air gets the native display and GPU in m1n1.conf and boot.bin, once'
+
+# An Air whose earlier setup wrote only the display line gets the GPU on update.
+printf '# omarchy-mac-boot: the M3 Air native display. Set it to 0 to keep m1n1 from handing it over.\nchosen.asahi,t8122-dcp=1\n' >"$work/etc/m1n1.conf"
+run && has_switches "${switches[@]}" && [[ $(<"$CALLS") == update-m1n1 ]] ||
+  fail 'an Air with only the display line gets the GPU switches, without a second display line' "$(conf)"
+# The owner's GPU choices, and the native 25G83 profile's lines, stay theirs.
+for owned in chosen.asahi,t8122-gpu=0 chosen.asahi,t8122-gpu=1 chosen.asahi,t8122-gpu-handoff-diag=1 chosen.asahi,j615-25g83-experimental=1; do
+  printf 'chosen.asahi,t8122-dcp=1\n%s\n' "$owned" >"$work/etc/m1n1.conf"
+  run && [[ $(conf) == $'chosen.asahi,t8122-dcp=1\n'"$owned" && ! -s $CALLS ]] ||
+    fail "an owner's $owned keeps the GPU switches out" "$(conf)"
+done
+printf 'chosen.asahi,t8122-gpu=0\n' >"$work/etc/m1n1.conf"
+run && has_switches chosen.asahi,t8122-dcp=1 chosen.asahi,t8122-gpu=0 && ! grep -q 'power-standin' "$work/etc/m1n1.conf" ||
+  fail "an owner's GPU off still gets the display, and nothing else" "$(conf)"
+printf 'chosen.asahi,t8122-dcp=0\n' >"$work/etc/m1n1.conf"
+run && [[ $(conf) == 'chosen.asahi,t8122-dcp=0' && ! -s $CALLS ]] || fail "the GPU never starts without the display handoff" "$(conf)"
+rm -rf "$work/etc"
+pass "the GPU switches reach Airs that had only the display, and the owner's GPU choices are kept"
 
 # The owner's own m1n1.conf lines stay, and their own choice for the display wins.
 mkdir -p "$work/etc"
@@ -147,3 +173,25 @@ done
 UPDATE_FAILS=1 RESTORE_FAILS=1 run || fail 'a failed restore still never fails the setup'
 grep -q 'could not be put back' "$work/out" || fail 'a failed restore says so instead of claiming m1n1.conf is back' "$(cat "$work/out")"
 pass 'a failed rebuild puts m1n1.conf back exactly, and the setup carries on'
+
+# 96-omarchy-mac-m3-air.hook runs the leaf again after an update of this package or m1n1-aurora.
+hook=$ROOT/files/usr/share/libalpm/hooks/96-omarchy-mac-m3-air.hook
+script=$ROOT/files/usr/share/libalpm/scripts/omarchy-mac-m3-air
+grep -Fxq 'Type = Package' "$hook" && grep -Fxq 'Target = omarchy-mac-boot' "$hook" && grep -Fxq 'Target = m1n1-aurora' "$hook" &&
+  grep -Fxq 'Operation = Upgrade' "$hook" && grep -Fxq 'When = PostTransaction' "$hook" &&
+  grep -Fxq "Exec = /${script#"$ROOT/files/"}" "$hook" && [[ -x $script ]] ||
+  fail 'the hook runs the packaged script after this package or m1n1-aurora is installed or upgraded'
+order=(95-m1n1-install.hook "${hook##*/}")
+[[ $(printf '%s\n' "${order[@]}" | LC_ALL=C sort) == "$(printf '%s\n' "${order[@]}")" ]] ||
+  fail "the hook runs after 95-m1n1-install.hook, so boot.bin is built last from the switches"
+if (( EUID != 0 )); then
+  staged=$work/staged
+  "$ROOT/install" "$staged"
+  [[ -x $staged/usr/share/libalpm/scripts/omarchy-mac-m3-air ]] || fail 'the hook script is installed executable'
+  leaf=$staged/usr/lib/omarchy-mac/boot/setup/m1n1-display.sh
+  printf 'echo "leaf PATH=$PATH" >>"%s"\nreturn 1\n' "$work/hook-ran" >"$leaf"
+  OMARCHY_MAC_BOOT_ROOT=$staged "$staged/usr/share/libalpm/scripts/omarchy-mac-m3-air" ||
+    fail 'a failing leaf never fails the pacman transaction'
+  grep -q '^leaf ' "$work/hook-ran" || fail 'the hook script runs the staged leaf'
+fi
+pass 'an update of omarchy-mac-boot or m1n1-aurora runs the M3 Air leaf again, after the m1n1 rebuild, and never fails'

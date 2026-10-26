@@ -61,15 +61,20 @@ Everything below the desktop is the Asahi Linux project's work, and the authorit
 
 ### M3 MacBook Air (edge testers)
 
-M3 Macs are not part of the first release. On an M3 MacBook Air installed from an edge image, the native display needs the line `chosen.asahi,t8122-dcp=1` in `/etc/m1n1.conf`, and a fresh install writes it when its `m1n1-aurora` is 1.6.1.aurora20-4 or newer. An M3 Air installed with an older `m1n1-aurora`, such as one from an image built before 20-4, doesn't get the line later, since updates don't write it. Once `pacman -Q m1n1-aurora` reports 1.6.1.aurora20-4 or newer, add the line yourself, unless `/etc/m1n1.conf` already has one, and rebuild m1n1's boot image, then reboot:
+M3 Macs are not part of the first release. On an M3 MacBook Air, 13-inch or 15-inch, Omarchy hands the built-in display and the GPU from m1n1 to Linux. It adds these lines to `/etc/m1n1.conf` and rebuilds m1n1's boot image, at install and again at the first update that finds them missing, once `pacman -Q m1n1-aurora` reports 1.6.1.aurora20-4 or newer:
 
-```bash
-grep -Eq '^[[:space:]]*chosen\.asahi,t8122-dcp=' /etc/m1n1.conf 2>/dev/null ||
-  printf '\nchosen.asahi,t8122-dcp=1\n' | sudo tee -a /etc/m1n1.conf
-sudo update-m1n1
+```
+chosen.asahi,t8122-dcp=1
+chosen.asahi,t8122-gpu=1
+chosen.asahi,t8122-gpu-power-standin=1
+chosen.asahi,t8122-gpu-fuse-leakage=1
 ```
 
-USB-C and DisplayPort external displays stay off on an M3 Air for now, since the line hands over only the built-in one. With an older `m1n1-aurora`, 1.6.1.aurora20-3 included, the line black-screens the Mac at boot. If that happens, remove it from `/etc/m1n1.conf` and run `sudo update-m1n1` again from a shell on this install that doesn't need the display, such as SSH if you set it up beforehand.
+The first line is the display, and the others start the GPU with its power settings. The change takes effect at the next reboot. m1n1 starts the GPU only on the macOS GPU firmware it knows, and leaves it off otherwise. Hardware graphics also need the Aurora kernel and Mesa that use it: until both are installed the desktop renders in software, which is slow.
+
+To keep the GPU off, set `chosen.asahi,t8122-gpu=0`; to keep the display with m1n1 too, set `chosen.asahi,t8122-dcp=0`. Then run `sudo update-m1n1` and reboot. Omarchy never changes a line you set, and adds no GPU lines while the display line is 0 or any `chosen.asahi,t8122-gpu` line of your own is there.
+
+USB-C and DisplayPort external displays stay off on an M3 Air for now, since the display line hands over only the built-in one. With an older `m1n1-aurora`, 1.6.1.aurora20-3 included, the display line black-screens the Mac at boot. If that happens, remove it from `/etc/m1n1.conf` and run `sudo update-m1n1` again from a shell on this install that doesn't need the display, such as SSH if you set it up beforehand.
 
 Anything marked work in progress there, Thunderbolt device support among them, is work in progress here too. The Aurora kernel adds the display, camera and USB4 work described above.
 
