@@ -94,6 +94,11 @@ for owned in 'chosen.asahi,t8122-dcp=0' 'chosen.asahi,t8122-dcp=' 'chosen.asahi,
   run && [[ $(conf) == "$owned" && ! -s $CALLS ]] ||
     fail "the GPU never starts beside a display line that is not exactly 1: '$owned'" "$(conf)"
 done
+for owned in 'chosen.asahi,t8122-dcp=' $'chosen.asahi,t8122-dcp=1\nchosen.asahi,t8122-dcp='; do
+  printf '%s' "$owned" >"$work/etc/m1n1.conf"
+  run && [[ $(conf) == "$owned" && ! -s $CALLS ]] ||
+    fail "an empty last display line without its newline still keeps the GPU out: '$owned'" "$(conf)"
+done
 rm -rf "$work/etc"
 pass "the GPU switches reach Airs that had only the display, and the owner's GPU choices are kept"
 

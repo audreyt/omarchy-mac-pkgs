@@ -52,13 +52,14 @@ systemd-detect-virt --quiet --chroot 2>/dev/null && return 0
   # beside a display line that is exactly 1 (every one of them), and never next to
   # an owner's GPU or native-profile line.
   owner_display=() display_on=1
-  [[ ! -r $config ]] || mapfile -t owner_display < <(sed -nE "s/^[[:space:]]*${key//./\\.}=//p" "$config")
+  [[ ! -r $config ]] || mapfile -t owner_display < <(sed -nE "s/^[[:space:]]*${key//./\\.}=/v/p" "$config")
   wanted=()
   if (( ${#owner_display[@]} == 0 )); then
     wanted+=("$key")
   fi
   for value in "${owner_display[@]}"; do
-    [[ $value == "1" ]] || display_on=0
+    # Each value carries a v, so an empty last line without its newline still counts.
+    [[ $value == "v1" ]] || display_on=0
   done
   if (( display_on )) && ! { [[ -r $config ]] && grep -Eq '^[[:space:]]*chosen\.asahi,(t8122-gpu|j61[35]-25g83)[^=]*=' "$config"; }; then
     wanted+=("${gpu_keys[@]}")
