@@ -56,12 +56,14 @@ systemd-detect-virt --quiet --chroot 2>/dev/null && return 0
     [[ $order =~ ^-?[0-9]+$ ]] && (( order >= 0 )); then
     defaults=1
   fi
-  # This leaf's own block from before the defaults: its header and the four switches at 1.
-  own_header='^# omarchy-mac-boot: the M3 Air native display'
+  # This leaf's own block from before the defaults: one of the two headers it wrote, exactly as
+  # written, then the four switches at 1. A comment that only starts the same way is the owner's.
+  own_header_v1='# omarchy-mac-boot: the M3 Air native display. Set it to 0 to keep m1n1 from handing it over.'
+  own_header_v2='# omarchy-mac-boot: the M3 Air native display and GPU. Set a line to 0 to keep m1n1 from handing it over.'
   own_switch='^chosen\.asahi,t8122-(dcp|gpu|gpu-power-standin|gpu-fuse-leakage)=1$'
   wanted=()
   if (( defaults )); then
-    if ! { [[ -r $config ]] && grep -Eq "$own_header" "$config"; }; then
+    if ! { [[ -r $config ]] && grep -Fxq -e "$own_header_v1" -e "$own_header_v2" "$config"; }; then
       echo "m1n1-display: m1n1-aurora $installed hands the M3 Air display and GPU over by default; nothing to write"
       exit 0
     fi
@@ -91,8 +93,9 @@ systemd-detect-virt --quiet --chroot 2>/dev/null && return 0
   if (( defaults )); then
     cp "$config" "$staged/original" || m1n1_display_unstaged
     # Drop the header and the =1 switches right after it; every other line, an owner's 0 too, stays.
-    OWN_HEADER=$own_header OWN_SWITCH=$own_switch awk \
-      '$0 ~ ENVIRON["OWN_HEADER"] { block = 1; next } block && $0 ~ ENVIRON["OWN_SWITCH"] { next } { block = 0; print }' \
+    OWN_HEADER_V1=$own_header_v1 OWN_HEADER_V2=$own_header_v2 OWN_SWITCH=$own_switch awk \
+      '$0 == ENVIRON["OWN_HEADER_V1"] || $0 == ENVIRON["OWN_HEADER_V2"] { block = 1; next }
+       block && $0 ~ ENVIRON["OWN_SWITCH"] { next } { block = 0; print }' \
       "$config" >"$staged/new" || m1n1_display_unstaged
   else
     if [[ -e $config ]]; then

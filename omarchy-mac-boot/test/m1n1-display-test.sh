@@ -193,6 +193,20 @@ for owned in 'chosen.asahi,t8122-gpu=1' 'chosen.asahi,t8122-dcp=0' $'display=192
   defaults && [[ $(conf) == "$owned" && ! -s $CALLS ]] ||
     fail "an owner's own line outside this package's block stays as it is: '$owned'" "$(conf)"
 done
+# Only the two headers exactly as this package wrote them mark its block: an owner's comment that
+# starts the same way, or one of those headers with more text, stays byte for byte with its lines.
+for header in '# omarchy-mac-boot: the M3 Air native display, my own note' "$header_v2 Mine now." "$header_v1 (kept)" \
+  " $header_v1"; do
+  printf '%s\n%s\n' "$header" "$(printf '%s\n' "${switches[@]}")" >"$work/etc/m1n1.conf"
+  cp "$work/etc/m1n1.conf" "$work/original"
+  defaults && cmp -s "$work/etc/m1n1.conf" "$work/original" && [[ ! -s $CALLS ]] ||
+    fail "an owner's comment that only starts like this package's header keeps its block: '$header'" "$(conf)"
+done
+printf '%s\nchosen.asahi,t8122-dcp=1\n%s\nchosen.asahi,t8122-dcp=1\n' "$header_v2" \
+  '# omarchy-mac-boot: the M3 Air native display, my own note' >"$work/etc/m1n1.conf"
+defaults && [[ $(conf) == $'# omarchy-mac-boot: the M3 Air native display, my own note\nchosen.asahi,t8122-dcp=1' &&
+  $(<"$CALLS") == update-m1n1 ]] ||
+  fail "only this package's exact block goes; the owner's look-alike comment and its line stay" "$(conf)"
 printf '%s\n%s\n' "$header_v2" "$(printf '%s\n' "${switches[@]}")" >"$work/etc/m1n1.conf"
 cp "$work/etc/m1n1.conf" "$work/original"
 UPDATE_FAILS=1 defaults || fail 'a failed rebuild after the cleanup never fails the setup'
