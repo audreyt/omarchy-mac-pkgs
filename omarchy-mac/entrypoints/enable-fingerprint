@@ -16,9 +16,13 @@ if [[ -e /etc/omarchy-mac/touchid-on ]]; then
   # whatever its status: on a kernel that loads the driver read-only, the
   # options are what lets it reach ready after a restart.
   options=/etc/modprobe.d/omarchy-mac-touchid.conf
-  # Options and login policy share the setup/removal lock.
+  # Options and login policy share the setup/removal lock, so a removal
+  # running now can't be undone here.
   lock=/run/omarchy-mac/touchid.lock
-  if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null || ! flock -w 300 "$lock_fd"; then
+  if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null; then
+    echo "Touch ID's driver options could not be written: its lock, $lock, could not be opened." >&2
+    exit 1
+  elif ! flock -w 300 "$lock_fd"; then
     echo "Touch ID's driver options could not be written: another Touch ID setup or removal is still running." >&2
     exit 1
   fi
