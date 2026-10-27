@@ -1,0 +1,53 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: MIT
+"""Succeed only while PAM_USER's login keyring is running and unlocked."""
+
+import os
+from pathlib import Path
+import pwd
+import subprocess
+import sys
+
+RUNTIME = Path("/run/user")
+SECRETS = "org.freedesktop.secrets"
+LOGIN = "/org/freedesktop/secrets/collection/login"
+
+
+def unlocked(user: str, run=subprocess.run, runtime: Path = RUNTIME) -> bool:
+    try:
+        entry = pwd.getpwnam(user)
+    except KeyError:
+        return False
+    bus = runtime / str(entry.pw_uid) / "bus"
+    if not bus.is_socket():
+        return False
+    command = ["/usr/bin/setpriv", f"--reuid={entry.pw_uid}", f"--regid={entry.pw_gid}",
+               "--clear-groups", "--reset-env", "/usr/bin/busctl",
+               f"--address=unix:path={bus}", "--timeout=2"]
+
+    def ask(*arguments: str) -> str | None:
+        try:
+            done = run([*command, *arguments], capture_output=True, text=True,
+                       timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    # Asking whether the name has an owner never starts a stopped keyring.
+    if ask("call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+           "org.freedesktop.DBus", "NameHasOwner", "s", SECRETS) != "b true":
+        return False
+    return ask("get-property", SECRETS, LOGIN,
+               "org.freedesktop.Secret.Collection", "Locked") == "b false"
+
+
+def main() -> int:
+    if subprocess.run(["omarchy-hw-apple-silicon"], check=False).returncode != 0:
+        return 1
+    if unlocked(os.environ.get("PAM_USER", "")):
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -10,12 +10,26 @@ import sys
 import tempfile
 
 PREFIX = "# omarchy-mac Touch ID\n" "auth include omarchy-mac-touchid\n"
+# An empty password asks for Touch ID, offered only while the login keyring is
+# unlocked; any other password skips straight to the stock password stack. An
+# unanswered finger ends without pam_unix, a rejected one counts for faillock.
 POLICY = """#%PAM-1.0
+auth requisite pam_shells.so
+auth requisite pam_nologin.so
+auth requisite pam_faillock.so preauth
+auth [success=ignore default=3] pam_exec.so quiet expose_authtok /usr/lib/omarchy-mac/touchid-pam-empty-password
+auth [success=ignore default=die] pam_exec.so quiet /usr/lib/omarchy-mac/touchid-pam-keyring-unlocked
+auth [success=done maxtries=ignore default=die] pam_fprintd.so max-tries=3 timeout=5
+auth [default=die] pam_faillock.so authfail
+"""
+PREVIOUS_POLICIES = (
+    """#%PAM-1.0
 auth requisite pam_shells.so
 auth requisite pam_nologin.so
 auth required pam_faillock.so preauth
 auth sufficient pam_fprintd.so max-tries=3 timeout=10
-"""
+""",
+)
 AUTH = {
     ("auth", "include", "system-login"),
     ("-auth", "optional", "pam_gnome_keyring.so"),
@@ -89,7 +103,7 @@ def configure(directory: Path, enable: bool) -> None:
     policy = directory / "omarchy-mac-touchid"
     original = read_regular(sddm)
     existing_policy = read_regular(policy)
-    if existing_policy not in (None, POLICY):
+    if existing_policy not in (None, POLICY, *PREVIOUS_POLICIES):
         raise Refused(f"{policy} was changed; leaving it alone")
     if original is None:
         return
@@ -106,7 +120,7 @@ def configure(directory: Path, enable: bool) -> None:
             content = read_regular(directory / name)
             if content is None or auth_lines(content) != expected:
                 raise Refused(f"{directory / name} has custom authentication requirements")
-        if existing_policy is None:
+        if existing_policy != POLICY:
             write_atomic(policy, POLICY)
         if not active:
             write_atomic(sddm, PREFIX + original)

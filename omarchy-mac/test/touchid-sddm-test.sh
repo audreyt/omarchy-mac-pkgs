@@ -98,26 +98,56 @@ printf 'administrator policy\n' >"$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid"
 cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'a refusal enabled custom policy'
 pass 'custom and symlinked PAM files are refused before writes'
 
-# Exercise the generated control flow with libpam, substituting only each
-# authentication provider's result, not PAM's include/required/sufficient rules.
-python3 -I - "$helper" "$work" <<'PY'
+previous=$(python3 -I -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["PREVIOUS_POLICIES"][0], end="")' "$helper")
+printf '%s\n' "$previous" >"$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid"
+printf '# omarchy-mac Touch ID\nauth include omarchy-mac-touchid\n' | cat - "$work/original" >"$OMARCHY_MAC_TOUCHID_PAM/sddm"
+python3 -I "$helper" enable
+current=$(python3 -I -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["POLICY"], end="")' "$helper")
+[[ $(<"$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid") == "$current" ]] || fail 'enabling replaces the previous owned policy'
+python3 -I "$helper" disable
+cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'disabling after an upgrade restores the original'
+[[ ! -e $OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid ]] || fail 'the upgraded policy is removed'
+printf '%s\n' "$previous" >"$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid"
+python3 -I "$helper" disable
+[[ ! -e $OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid ]] || fail 'a previous owned policy is removed on disable'
+pass 'the previous owned policy is upgraded and removed'
+
+# Exercise the generated control flow with libpam and the real empty-password
+# helper through pam_exec, substituting only the keyring, fingerprint and
+# password providers' results.
+python3 -I - "$helper" "$work" "$ROOT/lib" <<'PY'
 import ctypes
 import ctypes.util
 from pathlib import Path
 import runpy
 import sys
 
-helper, root = Path(sys.argv[1]), Path(sys.argv[2]) / "dispatch"
+helper, work, lib = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+root = work / "dispatch"
 root.mkdir()
 policy = runpy.run_path(str(helper))["POLICY"]
 library = ctypes.util.find_library("pam")
 if library is None:
     raise RuntimeError("libpam is required for the PAM dispatch test")
 pam = ctypes.CDLL(library)
+libc = ctypes.CDLL(ctypes.util.find_library("c"))
+libc.malloc.restype = ctypes.c_void_p
+libc.strdup.restype = ctypes.c_void_p
+libc.strdup.argtypes = [ctypes.c_char_p]
 pointer = ctypes.c_void_p
 
+class Message(ctypes.Structure):
+    _fields_ = [("style", ctypes.c_int), ("text", ctypes.c_char_p)]
+
+class Response(ctypes.Structure):
+    _fields_ = [("text", pointer), ("code", ctypes.c_int)]
+
+CONVERSE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int,
+                            ctypes.POINTER(ctypes.POINTER(Message)),
+                            ctypes.POINTER(ctypes.POINTER(Response)), pointer)
+
 class Conversation(ctypes.Structure):
-    _fields_ = [("function", pointer), ("data", pointer)]
+    _fields_ = [("function", CONVERSE), ("data", pointer)]
 
 pam.pam_start_confdir.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
                                  ctypes.POINTER(Conversation), ctypes.c_char_p,
@@ -125,43 +155,135 @@ pam.pam_start_confdir.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
 pam.pam_authenticate.argtypes = [pointer, ctypes.c_int]
 pam.pam_acct_mgmt.argtypes = [pointer, ctypes.c_int]
 pam.pam_end.argtypes = [pointer, ctypes.c_int]
-for fingerprint, password, shell, nologin, lockout, account, success in (
-    (True, False, True, True, True, True, True),
-    (False, True, True, True, True, True, True),
-    (False, False, True, True, True, True, False),
-    (True, True, False, True, True, True, False),
-    (True, True, True, False, True, True, False),
-    (True, True, True, True, False, True, False),
-    (True, True, True, True, True, False, False),
-):
-    current = policy
-    for module, result, arguments in (
-        ("pam_shells.so", shell, ""),
-        ("pam_nologin.so", nologin, ""),
-        ("pam_faillock.so", lockout, " preauth"),
-        ("pam_fprintd.so", fingerprint, " max-tries=3 timeout=10"),
-    ):
-        current = current.replace(module + arguments,
-                                  "pam_permit.so" if result else "pam_deny.so")
+
+def script(name, body):
+    path = work / name
+    path.write_text("#!/bin/bash\n" + body)
+    path.chmod(0o755)
+    return path
+
+record = work / "authfail-record"
+# pam_exec passes no PATH, so point the real helper's platform check at the stub.
+empty = script("empty-password", (lib / "touchid-pam-empty-password").read_text().removeprefix("#!/bin/bash\n")
+               .replace("omarchy-hw-apple-silicon", str(work / "bin" / "omarchy-hw-apple-silicon")))
+keyring = {True: script("keyring-unlocked", "exit 0\n"),
+           False: script("keyring-locked", "exit 1\n")}
+authfail = script("authfail", f"echo >>{record}\nexit 0\n")
+check = script("password-check", "IFS= read -r -d '' typed || true\n"
+               "if [[ $typed == secret ]]; then exit 0; else exit 1; fi\n")
+
+def attempt(typed, unlocked, fingerprint, password=True, shell=True, nologin=True,
+            lockout=True, account=True):
+    current = policy.replace("/usr/lib/omarchy-mac/touchid-pam-empty-password", str(empty))
+    current = current.replace("/usr/lib/omarchy-mac/touchid-pam-keyring-unlocked",
+                              str(keyring[unlocked]))
+    current = current.replace("pam_fprintd.so max-tries=3 timeout=5",
+                              f"pam_debug.so auth={fingerprint}")
+    current = current.replace("pam_faillock.so authfail", f"pam_exec.so {authfail}")
+    for module, result in (("pam_shells.so", shell), ("pam_nologin.so", nologin),
+                           ("pam_faillock.so preauth", lockout)):
+        current = current.replace(module, "pam_permit.so" if result else "pam_deny.so")
     (root / "omarchy-mac-touchid").write_text(current)
+    stack = (f"auth required pam_exec.so expose_authtok {check}\n" if password
+             else "auth required pam_deny.so\n")
     (root / "sddm").write_text(
-        "auth include omarchy-mac-touchid\n"
-        "auth required " + ("pam_permit.so" if password else "pam_deny.so") + "\n"
+        "auth include omarchy-mac-touchid\n" + stack +
         "account required " + ("pam_permit.so" if account else "pam_deny.so") + "\n")
+    record.unlink(missing_ok=True)
+    prompts = []
+
+    def converse(count, messages, responses, data):
+        answers = ctypes.cast(libc.malloc(ctypes.sizeof(Response) * count),
+                              ctypes.POINTER(Response))
+        for index in range(count):
+            message = messages[index].contents if count == 1 else messages[0][index]
+            answers[index].code = 0
+            answers[index].text = None
+            if message.style == 1:
+                prompts.append(message.text)
+                answers[index].text = libc.strdup(typed.encode())
+        responses[0] = answers
+        return 0
+
+    function = CONVERSE(converse)
+    conversation = Conversation(function, None)
     handle = pointer()
-    conversation = Conversation()
-    result = pam.pam_start_confdir(b"sddm", b"fixture-user",
-                                  ctypes.byref(conversation), str(root).encode(),
-                                  ctypes.byref(handle))
+    result = pam.pam_start_confdir(b"sddm", b"fixture-user", ctypes.byref(conversation),
+                                  str(root).encode(), ctypes.byref(handle))
     if result != 0:
         raise RuntimeError(f"pam_start_confdir: {result}")
     try:
         result = pam.pam_authenticate(handle, 0)
         if result == 0:
             result = pam.pam_acct_mgmt(handle, 0)
-        assert (result == 0) == success, (
-            fingerprint, password, shell, nologin, lockout, account, result)
     finally:
         pam.pam_end(handle, result)
-print("ok - real PAM keeps password fallback and rejects shell, nologin, lockout and account failures")
+    return result == 0, len(prompts), record.exists()
+
+cases = (
+    (dict(typed="", unlocked=True, fingerprint="success"), (True, 1, False)),
+    (dict(typed="", unlocked=True, fingerprint="authinfo_unavail"), (False, 1, False)),
+    (dict(typed="", unlocked=True, fingerprint="auth_err"), (False, 1, False)),
+    (dict(typed="", unlocked=True, fingerprint="maxtries"), (False, 1, True)),
+    (dict(typed="", unlocked=False, fingerprint="success"), (False, 1, False)),
+    (dict(typed="", unlocked=True, fingerprint="authinfo_unavail", password=True), (False, 1, False)),
+    (dict(typed="secret", unlocked=True, fingerprint="success", password=False), (False, 1, False)),
+    (dict(typed="secret", unlocked=False, fingerprint="maxtries"), (True, 1, False)),
+    (dict(typed="wrong", unlocked=True, fingerprint="success"), (False, 1, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", shell=False), (False, 0, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", nologin=False), (False, 0, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", lockout=False), (False, 0, False)),
+    (dict(typed="secret", unlocked=True, fingerprint="success", lockout=False), (False, 0, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", account=False), (False, 1, False)),
+)
+for arguments, expected in cases:
+    observed = attempt(**arguments)
+    assert observed == expected, (arguments, expected, observed)
+print("ok - real PAM sends empty passwords to Touch ID only with an unlocked keyring, sends typed passwords straight to the password stack with one prompt, and keeps shell, nologin, lockout and account checks")
+PY
+
+# The keyring check never starts a stopped keyring and accepts only an unlocked login collection.
+python3 -I - "$ROOT/lib/touchid-pam-keyring-unlocked" "$work" <<'PY'
+import os
+from pathlib import Path
+import pwd
+import runpy
+import socket
+import subprocess
+import sys
+
+module = runpy.run_path(sys.argv[1])
+unlocked = module["unlocked"]
+runtime = Path(sys.argv[2]) / "runtime"
+user = pwd.getpwuid(os.getuid())
+bus = runtime / str(user.pw_uid) / "bus"
+
+def fake(owner, locked, failure=None):
+    calls = []
+
+    def run(command, **options):
+        calls.append(command)
+        assert command[:2] == ["/usr/bin/setpriv", f"--reuid={user.pw_uid}"], command
+        assert f"--address=unix:path={bus}" in command, command
+        if failure:
+            raise failure
+        if "NameHasOwner" in command:
+            return subprocess.CompletedProcess(command, 0, f"b {owner}\n", "")
+        return subprocess.CompletedProcess(command, 0, f"b {locked}\n", "")
+    return run, calls
+
+run, calls = fake("true", "false")
+assert not unlocked(user.pw_name, run, runtime) and not calls, "no user bus means locked"
+bus.parent.mkdir(parents=True)
+listener = socket.socket(socket.AF_UNIX)
+listener.bind(str(bus))
+assert unlocked(user.pw_name, run, runtime) and len(calls) == 2
+run, calls = fake("false", "false")
+assert not unlocked(user.pw_name, run, runtime) and len(calls) == 1, "a stopped keyring is never queried"
+run, calls = fake("true", "true")
+assert not unlocked(user.pw_name, run, runtime)
+run, calls = fake("true", "false", subprocess.TimeoutExpired("busctl", 5))
+assert not unlocked(user.pw_name, run, runtime)
+assert not unlocked("no-such-user-omarchy-mac", run, runtime)
+print("ok - the keyring check requires a running, unlocked login collection")
 PY
