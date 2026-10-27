@@ -50,7 +50,9 @@ run() {
   PATH="${VERCMP:+$fake_vercmp:}$stub:$PATH" OMARCHY_DEVICE_TREE_COMPATIBLE=$work/compatible OMARCHY_M1N1_CONF=$work/etc/m1n1.conf \
     OMARCHY_SYSTEMD_RUN=${SYSTEMD_RUN-$work/run-systemd} \
     OMARCHY_M1N1_T8122_DCP_MINIMUM=${MINIMUM-1.6.1.aurora21-1} M1N1_VERSION=${VERSION-1.6.1.aurora21-1} \
+    OMARCHY_M1N1_M3_DEFAULTS_MINIMUM=${DEFAULTS-99.0-1} \
     bash -c '[[ -z ${PACKAGED:-} ]] || unset OMARCHY_M1N1_T8122_DCP_MINIMUM
+      [[ -z ${PACKAGED_DEFAULTS:-} ]] || unset OMARCHY_M1N1_M3_DEFAULTS_MINIMUM
       [[ -z ${FILE_BLOCKS:-} ]] || { trap "" XFSZ; ulimit -f "$FILE_BLOCKS"; }
       source "$1"' _ "$ROOT/setup/m1n1-display.sh" >"$work/out" 2>&1
 }
@@ -153,6 +155,73 @@ for newer in 1.6.1.aurora20-10 1.6.1.aurora21-1; do
     fail "m1n1-aurora $newer, newer than the packaged minimum, gets the display line" "$(conf) $(cat "$work/out")"
 done
 pass 'only an m1n1-aurora at or above the packaged minimum gets the line on an M3 Air'
+
+# m1n1-aurora 1.6.1.aurora21-1 and later arm the M3 graphics in stage 2 themselves: nothing is
+# written, and the =1 block this package wrote earlier goes, while every other line stays.
+grep -Fxq '  m1n1_m3_defaults_minimum=1.6.1.aurora21-1' "$ROOT/setup/m1n1-display.sh" ||
+  fail 'the packaged defaults minimum is the first m1n1-aurora whose stage 2 arms the M3 graphics'
+defaults() { PACKAGED=1 PACKAGED_DEFAULTS=1 VERSION=${1-1.6.1.aurora21-1} run; }
+header_v2='# omarchy-mac-boot: the M3 Air native display and GPU. Set a line to 0 to keep m1n1 from handing it over.'
+header_v1='# omarchy-mac-boot: the M3 Air native display. Set it to 0 to keep m1n1 from handing it over.'
+machine apple,j613 apple,t8122 apple,arm-platform
+for version in 1.6.1.aurora21-1 1.6.1.aurora21-2 1.6.1.aurora22-1; do
+  rm -rf "$work/etc"
+  defaults "$version" && [[ $(conf) == absent && ! -s $CALLS ]] && grep -q 'by default; nothing to write' "$work/out" ||
+    fail "m1n1-aurora $version gets nothing written and nothing rebuilt" "$(conf) $(cat "$work/out")"
+done
+rm -rf "$work/etc"
+defaults 1.6.1.aurora20-10 && has_switches "${switches[@]}" ||
+  fail 'an m1n1-aurora before the defaults still gets the four switches' "$(conf)"
+mkdir -p "$work/etc"
+printf 'display=1920x1080\n%s\n%s\nchosen.asahi,other=1\n' "$header_v2" "$(printf '%s\n' "${switches[@]}")" >"$work/etc/m1n1.conf"
+defaults && [[ $(conf) == $'display=1920x1080\nchosen.asahi,other=1' && $(<"$CALLS") == update-m1n1 ]] ||
+  fail "this package's =1 block goes, the owner's lines stay, and boot.bin is rebuilt once" "$(conf) / $(cat "$CALLS")"
+before=$(conf)
+defaults && [[ $(conf) == "$before" && ! -s $CALLS ]] || fail 'a rerun changes nothing and rebuilds nothing' "$(conf)"
+for machine_name in j613 j615; do
+  machine apple,$machine_name apple,t8122 apple,arm-platform
+  printf '%s\nchosen.asahi,t8122-dcp=1\n' "$header_v1" >"$work/etc/m1n1.conf"
+  defaults && [[ -e $work/etc/m1n1.conf && -z $(conf) && $(<"$CALLS") == update-m1n1 ]] ||
+    fail "the first version's display-only block goes too on the $machine_name" "$(conf)"
+done
+machine apple,j613 apple,t8122 apple,arm-platform
+printf '%s\nchosen.asahi,t8122-dcp=1\nchosen.asahi,t8122-gpu=0\nchosen.asahi,t8122-gpu-power-standin=1\n' "$header_v2" >"$work/etc/m1n1.conf"
+defaults && [[ $(conf) == $'chosen.asahi,t8122-gpu=0\nchosen.asahi,t8122-gpu-power-standin=1' ]] ||
+  fail "an owner's 0 in the block stays, and so does every line after it" "$(conf)"
+for owned in 'chosen.asahi,t8122-gpu=1' 'chosen.asahi,t8122-dcp=0' $'display=1920x1080\nchosen.asahi,t8122-dcp=1'; do
+  printf '%s\n' "$owned" >"$work/etc/m1n1.conf"
+  defaults && [[ $(conf) == "$owned" && ! -s $CALLS ]] ||
+    fail "an owner's own line outside this package's block stays as it is: '$owned'" "$(conf)"
+done
+# Only the two headers exactly as this package wrote them mark its block: an owner's comment that
+# starts the same way, or one of those headers with more text, stays byte for byte with its lines.
+for header in '# omarchy-mac-boot: the M3 Air native display, my own note' "$header_v2 Mine now." "$header_v1 (kept)" \
+  " $header_v1"; do
+  printf '%s\n%s\n' "$header" "$(printf '%s\n' "${switches[@]}")" >"$work/etc/m1n1.conf"
+  cp "$work/etc/m1n1.conf" "$work/original"
+  defaults && cmp -s "$work/etc/m1n1.conf" "$work/original" && [[ ! -s $CALLS ]] ||
+    fail "an owner's comment that only starts like this package's header keeps its block: '$header'" "$(conf)"
+done
+printf '%s\nchosen.asahi,t8122-dcp=1\n%s\nchosen.asahi,t8122-dcp=1\n' "$header_v2" \
+  '# omarchy-mac-boot: the M3 Air native display, my own note' >"$work/etc/m1n1.conf"
+defaults && [[ $(conf) == $'# omarchy-mac-boot: the M3 Air native display, my own note\nchosen.asahi,t8122-dcp=1' &&
+  $(<"$CALLS") == update-m1n1 ]] ||
+  fail "only this package's exact block goes; the owner's look-alike comment and its line stay" "$(conf)"
+printf '%s\n%s\n' "$header_v2" "$(printf '%s\n' "${switches[@]}")" >"$work/etc/m1n1.conf"
+cp "$work/etc/m1n1.conf" "$work/original"
+UPDATE_FAILS=1 defaults || fail 'a failed rebuild after the cleanup never fails the setup'
+cmp -s "$work/etc/m1n1.conf" "$work/original" && grep -q 'is back as it was' "$work/out" ||
+  fail 'a failed rebuild puts the block back byte for byte, and says so' "$(conf)"
+for board in 'apple,j516s apple,t6030' 'apple,j514s apple,t6030' 'apple,j504 apple,t8122'; do
+  read -r -a compat <<<"$board"
+  machine "${compat[@]}" apple,arm-platform
+  printf '%s\nchosen.asahi,t8122-dcp=1\n' "$header_v1" >"$work/etc/m1n1.conf"
+  cp "$work/etc/m1n1.conf" "$work/original"
+  defaults && cmp -s "$work/etc/m1n1.conf" "$work/original" && [[ ! -s $CALLS ]] ||
+    fail "another Mac's m1n1.conf is left alone: $board" "$(conf)"
+done
+rm -rf "$work/etc"
+pass "an m1n1-aurora with the M3 defaults gets nothing written, and this package's old switch block goes"
 
 # A failed rebuild leaves m1n1.conf as it was, so the boot check stays consistent.
 machine apple,j613 apple,t8122 apple,arm-platform
