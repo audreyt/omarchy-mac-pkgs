@@ -105,8 +105,10 @@ echo "Turning Touch ID off later removes your fingerprints and stops the driver"
 echo "loading. The key store stays."
 echo
 echo "This applies to every user on this Mac and needs an administrator."
-echo "On a stock SDDM login screen, fingerprints also work for login; the"
-echo "password remains available. A custom SDDM PAM configuration is kept."
+echo "On a stock SDDM login screen, fingerprints also work when you log in"
+echo "again later in a boot: submit an empty password, then touch the sensor."
+echo "A typed password always works, but an account with no password can no"
+echo "longer log in there. A custom SDDM PAM configuration is kept."
 echo "Saying no leaves Touch ID off. You can turn it on later from"
 echo "Setup > Security > Fingerprint."
 echo

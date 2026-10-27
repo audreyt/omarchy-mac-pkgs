@@ -141,6 +141,28 @@ cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'refusing an unknow
 cp "$work/stock-system-auth" "$OMARCHY_MAC_TOUCHID_PAM/system-auth"
 pass "Omarchy's lockout options are accepted and carried into the policy"
 
+# A policy from before authsucc, with Omarchy's options, is still ours: enable replaces it.
+sed -e 's/^auth required pam_faillock.so preauth$/& silent deny=10 unlock_time=120/' \
+  -e 's/^auth \[default=die\] pam_faillock.so authfail$/& deny=10 unlock_time=120/' \
+  -e 's/^auth required pam_faillock.so authsucc$/& deny=10/' "$work/stock-system-auth" >"$OMARCHY_MAC_TOUCHID_PAM/system-auth"
+python3 -I - "$helper" "$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid" <<'PY'
+import runpy, sys
+module = runpy.run_path(sys.argv[1])
+old = module["render_policy"](["silent", "deny=10", "unlock_time=120"], ["deny=10", "unlock_time=120"], [],
+                               module["PREVIOUS_TEMPLATES"][0])
+assert "authsucc" not in old
+open(sys.argv[2], "w").write(old)
+PY
+printf '# omarchy-mac Touch ID\nauth include omarchy-mac-touchid\n' | cat - "$work/original" >"$OMARCHY_MAC_TOUCHID_PAM/sddm"
+python3 -I "$helper" enable || fail 'a policy from before authsucc is ours to replace'
+grep -Fxq 'auth [success=done default=die] pam_faillock.so authsucc deny=10' "$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid" ||
+  fail "the replaced policy clears failures with system-auth's options"
+python3 -I "$helper" disable
+cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'disabling after replacing a pre-authsucc policy restores the original'
+[[ ! -e $OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid ]] || fail 'the replaced policy is removed'
+cp "$work/stock-system-auth" "$OMARCHY_MAC_TOUCHID_PAM/system-auth"
+pass 'a policy from before authsucc is replaced and removed'
+
 # Removal only cares whether SDDM's file includes our policy, even through a symlink.
 mv "$OMARCHY_MAC_TOUCHID_PAM/sddm" "$work/real-sddm"
 ln -s "$work/real-sddm" "$OMARCHY_MAC_TOUCHID_PAM/sddm"
@@ -208,12 +230,14 @@ def script(name, body):
     return path
 
 record = work / "authfail-record"
+cleared = work / "authsucc-record"
 # pam_exec passes no PATH, so point the real helper's platform check at the stub.
 empty = script("empty-password", (lib / "touchid-pam-empty-password").read_text().removeprefix("#!/bin/bash\n")
                .replace("omarchy-hw-apple-silicon", str(work / "bin" / "omarchy-hw-apple-silicon")))
 keyring = {True: script("keyring-unlocked", "exit 0\n"),
            False: script("keyring-locked", "exit 1\n")}
 authfail = script("authfail", f"echo >>{record}\nexit 0\n")
+authsucc = script("authsucc", f"echo >>{cleared}\nexit 0\n")
 check = script("password-check", "IFS= read -r -d '' typed || true\n"
                "if [[ $typed == secret ]]; then exit 0; else exit 1; fi\n")
 
@@ -225,6 +249,7 @@ def attempt(typed, unlocked, fingerprint, password=True, shell=True, nologin=Tru
     current = current.replace("pam_fprintd.so max-tries=3 timeout=5",
                               f"pam_debug.so auth={fingerprint}")
     current = current.replace("pam_faillock.so authfail", f"pam_exec.so {authfail}")
+    current = current.replace("pam_faillock.so authsucc", f"pam_exec.so {authsucc}")
     for module, result in (("pam_shells.so", shell), ("pam_nologin.so", nologin),
                            ("pam_faillock.so preauth", lockout)):
         current = current.replace(module, "pam_permit.so" if result else "pam_deny.so")
@@ -235,6 +260,7 @@ def attempt(typed, unlocked, fingerprint, password=True, shell=True, nologin=Tru
         "auth include omarchy-mac-touchid\n" + stack +
         "account required " + ("pam_permit.so" if account else "pam_deny.so") + "\n")
     record.unlink(missing_ok=True)
+    cleared.unlink(missing_ok=True)
     prompts = []
 
     def converse(count, messages, responses, data):
@@ -263,31 +289,32 @@ def attempt(typed, unlocked, fingerprint, password=True, shell=True, nologin=Tru
             result = pam.pam_acct_mgmt(handle, 0)
     finally:
         pam.pam_end(handle, result)
-    return result == 0, len(prompts), record.exists()
+    return result == 0, len(prompts), record.exists(), cleared.exists()
 
+# (succeeds, prompts, failure counted, failures cleared)
 cases = (
-    (dict(typed="", unlocked=True, fingerprint="success"), (True, 1, False)),
-    (dict(typed="", unlocked=True, fingerprint="authinfo_unavail"), (False, 1, False)),
-    (dict(typed="", unlocked=True, fingerprint="auth_err"), (False, 1, False)),
-    (dict(typed="", unlocked=True, fingerprint="maxtries"), (False, 1, True)),
-    (dict(typed="", unlocked=False, fingerprint="success"), (False, 1, False)),
-    (dict(typed="", unlocked=True, fingerprint="authinfo_unavail", password=True), (False, 1, False)),
-    (dict(typed="secret", unlocked=True, fingerprint="success", password=False), (False, 1, False)),
-    (dict(typed="secret", unlocked=False, fingerprint="maxtries"), (True, 1, False)),
-    (dict(typed="wrong", unlocked=True, fingerprint="success"), (False, 1, False)),
-    (dict(typed="", unlocked=True, fingerprint="success", shell=False), (False, 0, False)),
-    (dict(typed="", unlocked=True, fingerprint="success", nologin=False), (False, 0, False)),
-    (dict(typed="", unlocked=True, fingerprint="success", lockout=False), (False, 0, False)),
-    (dict(typed="secret", unlocked=True, fingerprint="success", lockout=False), (False, 0, False)),
-    (dict(typed="", unlocked=True, fingerprint="success", account=False), (False, 1, False)),
+    (dict(typed="", unlocked=True, fingerprint="success"), (True, 1, False, True)),
+    (dict(typed="", unlocked=True, fingerprint="authinfo_unavail"), (False, 1, False, False)),
+    (dict(typed="", unlocked=True, fingerprint="auth_err"), (False, 1, False, False)),
+    (dict(typed="", unlocked=True, fingerprint="maxtries"), (False, 1, True, False)),
+    (dict(typed="", unlocked=False, fingerprint="success"), (False, 1, False, False)),
+    (dict(typed="", unlocked=True, fingerprint="authinfo_unavail", password=True), (False, 1, False, False)),
+    (dict(typed="secret", unlocked=True, fingerprint="success", password=False), (False, 1, False, False)),
+    (dict(typed="secret", unlocked=False, fingerprint="maxtries"), (True, 1, False, False)),
+    (dict(typed="wrong", unlocked=True, fingerprint="success"), (False, 1, False, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", shell=False), (False, 0, False, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", nologin=False), (False, 0, False, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", lockout=False), (False, 0, False, False)),
+    (dict(typed="secret", unlocked=True, fingerprint="success", lockout=False), (False, 0, False, False)),
+    (dict(typed="", unlocked=True, fingerprint="success", account=False), (False, 1, False, True)),
 )
 for arguments, expected in cases:
     observed = attempt(**arguments)
     assert observed == expected, (arguments, expected, observed)
-print("ok - real PAM sends empty passwords to Touch ID only with an unlocked keyring, sends typed passwords straight to the password stack with one prompt, and keeps shell, nologin, lockout and account checks")
+print("ok - real PAM sends empty passwords to Touch ID only with an unlocked keyring, clears the failure count after an accepted finger, sends typed passwords straight to the password stack with one prompt, and keeps shell, nologin, lockout and account checks")
 PY
 
-# The keyring check never starts a stopped keyring and accepts only an unlocked login collection.
+# The keyring check never starts a stopped keyring and refuses only a login keyring that is or would start locked.
 python3 -I - "$ROOT/lib/touchid-pam-keyring-unlocked" "$work" <<'PY'
 import os
 from pathlib import Path
@@ -303,17 +330,29 @@ runtime = Path(sys.argv[2]) / "runtime"
 user = pwd.getpwuid(os.getuid())
 bus = runtime / str(user.pw_uid) / "bus"
 
-def fake(owner, locked, failure=None):
+LOGIN = '"/org/freedesktop/secrets/collection/login"'
+DEFAULT = '"/org/freedesktop/secrets/collection/Default_5fkeyring"'
+SESSION = '"/org/freedesktop/secrets/collection/session"'
+login_file = Path(user.pw_dir) / ".local/share/keyrings/login.keyring"
+
+def fake(owner, locked, collections=(LOGIN, SESSION), login_file_exists=False, failure=None):
     calls = []
 
     def run(command, **options):
         calls.append(command)
         assert command[:2] == ["/usr/bin/setpriv", f"--reuid={user.pw_uid}"], command
-        assert f"--address=unix:path={bus}" in command, command
         if failure:
             raise failure
+        if "/usr/bin/test" in command:
+            assert command[-3:] == ["!", "-e", str(login_file)], command
+            return subprocess.CompletedProcess(command, 1 if login_file_exists else 0)
+        assert f"--address=unix:path={bus}" in command, command
         if "NameHasOwner" in command:
             return subprocess.CompletedProcess(command, 0, f"b {owner}\n", "")
+        if "Collections" in command:
+            listed = " ".join(("ao", str(len(collections)), *collections))
+            return subprocess.CompletedProcess(command, 0, listed + "\n", "")
+        assert "Locked" in command and "/org/freedesktop/secrets/collection/login" in command, command
         return subprocess.CompletedProcess(command, 0, f"b {locked}\n", "")
     return run, calls
 
@@ -322,13 +361,26 @@ assert not unlocked(user.pw_name, run, runtime) and not calls, "no user bus mean
 bus.parent.mkdir(parents=True)
 listener = socket.socket(socket.AF_UNIX)
 listener.bind(str(bus))
-assert unlocked(user.pw_name, run, runtime) and len(calls) == 2
-run, calls = fake("false", "false")
-assert not unlocked(user.pw_name, run, runtime) and len(calls) == 1, "a stopped keyring is never queried"
+assert unlocked(user.pw_name, run, runtime) and len(calls) == 3, "an unlocked login collection"
 run, calls = fake("true", "true")
+assert not unlocked(user.pw_name, run, runtime), "a locked login collection"
+run, calls = fake("true", "true", collections=(DEFAULT, SESSION))
+assert unlocked(user.pw_name, run, runtime) and len(calls) == 2, "omacom/omarchy's keyring has no login collection to unlock"
+run, calls = fake("false", "true")
+assert unlocked(user.pw_name, run, runtime) and len(calls) == 2, "a stopped keyring without a login keyring file"
+assert not any("Locked" in call or "Collections" in call for call in calls), "a stopped keyring is never queried"
+run, calls = fake("false", "false", login_file_exists=True)
+assert not unlocked(user.pw_name, run, runtime), "a stopped keyring with a login keyring would start locked"
+run, calls = fake("true", "false", failure=subprocess.TimeoutExpired("busctl", 5))
 assert not unlocked(user.pw_name, run, runtime)
-run, calls = fake("true", "false", subprocess.TimeoutExpired("busctl", 5))
+run, calls = fake("false", "false", failure=OSError("setpriv"))
 assert not unlocked(user.pw_name, run, runtime)
+
+def broken(command, **options):
+    if "NameHasOwner" in command:
+        return subprocess.CompletedProcess(command, 0, "b true\n", "")
+    return subprocess.CompletedProcess(command, 1, "", "Object does not exist")
+assert not unlocked(user.pw_name, broken, runtime), "an unreadable collection list is not taken as empty"
 assert not unlocked("no-such-user-omarchy-mac", run, runtime)
-print("ok - the keyring check requires a running, unlocked login collection")
+print("ok - the keyring check refuses a locked or would-be-locked login keyring and passes a keyring without one")
 PY
