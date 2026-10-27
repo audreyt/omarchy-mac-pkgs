@@ -629,10 +629,12 @@ flock "$held"
 ! ask ready '' && grep -q 'another Touch ID setup or removal is still running' "$fixture/out" && [[ ! -e $fixture/etc/modprobe.conf ]] ||
   fail "an agreed Mac's options wait for the lock" "$(<"$fixture/out")"
 exec {held}>&-
-rm "$fixture/etc/touchid-on"
 # A lock that can't be opened is said to be so, not taken for a setup running.
 rm -f "$fixture/run/touchid.lock"
 mkdir "$fixture/run/touchid.lock"
+! ask ready '' && grep -q 'could not be opened' "$fixture/out" && [[ ! -e $fixture/etc/modprobe.conf ]] ||
+  fail "an agreed Mac whose lock can't be opened says so" "$(<"$fixture/out")"
+rm "$fixture/etc/touchid-on"
 ! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && grep -q 'could not be opened' "$fixture/out" ||
   fail "a removal whose lock can't be opened says so" "$(<"$fixture/out")"
 rmdir "$fixture/run/touchid.lock"

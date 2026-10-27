@@ -19,7 +19,10 @@ if [[ -e /etc/omarchy-mac/touchid-on ]]; then
   if [[ ! -e $options ]]; then
     # Under the Touch ID lock, so a removal running now can't be undone here.
     lock=/run/omarchy-mac/touchid.lock
-    if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null || ! flock -w 300 "$lock_fd"; then
+    if ! { mkdir -p -m 0755 "${lock%/*}" && exec {lock_fd}>>"$lock"; } 2>/dev/null; then
+      echo "Touch ID's driver options could not be written: its lock, $lock, could not be opened." >&2
+      exit 1
+    elif ! flock -w 300 "$lock_fd"; then
       echo "Touch ID's driver options could not be written: another Touch ID setup or removal is still running." >&2
       exit 1
     fi
