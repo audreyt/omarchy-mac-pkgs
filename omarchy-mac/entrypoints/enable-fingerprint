@@ -38,8 +38,9 @@ if [[ -e /etc/omarchy-mac/touchid-on ]]; then
     echo "Touch ID is turned on but isn't ready yet ($recorded_status)."
     echo "Restart this Mac, then set up the fingerprint again. If it still isn't"
     echo "ready, see journalctl -u omarchy-mac-touchid-activate."
-  else
-    /usr/lib/omarchy-mac/touchid-sddm enable || exit 1
+  elif [[ -e /etc/omarchy-mac/touchid-sddm ]] && ! /usr/lib/omarchy-mac/touchid-sddm enable; then
+    # Only an owner who was told about the login screen gets it, and it never stops setup.
+    echo "Touch ID's SDDM login was left as it is: its PAM configuration is not one this package manages." >&2
   fi
   exec {lock_fd}>&-
   exit 0

@@ -112,6 +112,51 @@ python3 -I "$helper" disable
 [[ ! -e $OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid ]] || fail 'a previous owned policy is removed on disable'
 pass 'the previous owned policy is upgraded and removed'
 
+# Omarchy rewrites the faillock lines in system-auth; the policy carries its limits.
+cp "$OMARCHY_MAC_TOUCHID_PAM/system-auth" "$work/stock-system-auth"
+cat >"$OMARCHY_MAC_TOUCHID_PAM/system-auth" <<'PAM'
+auth required pam_faillock.so preauth silent deny=10 unlock_time=120
+-auth [success=2 default=ignore] pam_systemd_home.so
+auth [success=1 default=bad] pam_unix.so try_first_pass nullok
+auth [default=die] pam_faillock.so authfail deny=10 unlock_time=120
+auth optional pam_permit.so
+auth required pam_env.so
+auth required pam_faillock.so authsucc
+PAM
+python3 -I "$helper" enable || fail "Omarchy's lockout options must not make system-auth custom"
+grep -Fxq 'auth requisite pam_faillock.so preauth silent deny=10 unlock_time=120' "$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid" &&
+  grep -Fxq 'auth [default=die] pam_faillock.so authfail deny=10 unlock_time=120' "$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid" ||
+  fail "the policy must use system-auth's lockout options"
+cp "$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid" "$work/omarchy-policy"
+python3 -I "$helper" enable
+cmp "$work/omarchy-policy" "$OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid" || fail 'enabling twice keeps the same lockout options'
+cp "$work/stock-system-auth" "$OMARCHY_MAC_TOUCHID_PAM/system-auth"
+python3 -I "$helper" disable || fail 'an owned policy with earlier lockout options is still ours to remove'
+cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'disabling after the options changed restores the original'
+[[ ! -e $OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid ]] || fail 'the owned policy is removed whatever its lockout options'
+sed -i 's/^auth required pam_faillock.so preauth$/& dir=\/tmp\/lock/' "$OMARCHY_MAC_TOUCHID_PAM/system-auth"
+! python3 -I "$helper" enable 2>"$work/error" || fail 'an unknown lockout option is custom policy and must be refused'
+cmp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm" || fail 'refusing an unknown lockout option changed SDDM'
+[[ ! -e $OMARCHY_MAC_TOUCHID_PAM/omarchy-mac-touchid ]] || fail 'refusing an unknown lockout option installed a policy'
+cp "$work/stock-system-auth" "$OMARCHY_MAC_TOUCHID_PAM/system-auth"
+pass "Omarchy's lockout options are accepted and carried into the policy"
+
+# Removal only cares whether SDDM's file includes our policy, even through a symlink.
+mv "$OMARCHY_MAC_TOUCHID_PAM/sddm" "$work/real-sddm"
+ln -s "$work/real-sddm" "$OMARCHY_MAC_TOUCHID_PAM/sddm"
+python3 -I "$helper" disable || fail 'a symlinked SDDM file that does not include the policy has nothing to remove'
+[[ -L $OMARCHY_MAC_TOUCHID_PAM/sddm ]] && cmp "$work/original" "$work/real-sddm" || fail 'removal changed a symlinked SDDM file'
+ln -sfn "$work/missing" "$OMARCHY_MAC_TOUCHID_PAM/sddm"
+python3 -I "$helper" disable || fail 'a dangling SDDM symlink has nothing to remove'
+ln -sfn "$work/real-sddm" "$OMARCHY_MAC_TOUCHID_PAM/sddm"
+printf '# omarchy-mac Touch ID\nauth include omarchy-mac-touchid\n' | cat - "$work/original" >"$work/real-sddm"
+cp "$work/real-sddm" "$work/included"
+! python3 -I "$helper" disable 2>"$work/error" || fail 'a symlinked SDDM file that includes the policy must be reported'
+cmp "$work/included" "$work/real-sddm" || fail 'a refused removal changed the symlink target'
+rm "$OMARCHY_MAC_TOUCHID_PAM/sddm"
+cp "$work/original" "$OMARCHY_MAC_TOUCHID_PAM/sddm"
+pass 'removal ignores SDDM files that do not include the policy and reports ones that do'
+
 # Exercise the generated control flow with libpam and the real empty-password
 # helper through pam_exec, substituting only the keyring, fingerprint and
 # password providers' results.

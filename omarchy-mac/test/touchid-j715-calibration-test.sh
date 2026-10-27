@@ -9,6 +9,7 @@ export OMARCHY_MAC_TOUCHID_TREE=$fixture/tree
 export OMARCHY_MAC_TOUCHID_FIRMWARE=$fixture/firmware
 export OMARCHY_MAC_TOUCHID_EXTRACTORS=$fixture/extractors
 export OMARCHY_MAC_TOUCHID_AGREED=$fixture/etc/touchid-on
+export OMARCHY_MAC_TOUCHID_SDDM_AGREED=$fixture/etc/touchid-sddm
 export OMARCHY_MAC_TOUCHID_OPTIONS=$fixture/etc/modprobe.conf
 export OMARCHY_MAC_TOUCHID_MODULE=$fixture/module
 export OMARCHY_MAC_TOUCHID_STATUS=$fixture/run/touchid
