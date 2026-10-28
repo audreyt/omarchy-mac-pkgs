@@ -333,9 +333,11 @@ bus = runtime / str(user.pw_uid) / "bus"
 LOGIN = '"/org/freedesktop/secrets/collection/login"'
 DEFAULT = '"/org/freedesktop/secrets/collection/Default_5fkeyring"'
 SESSION = '"/org/freedesktop/secrets/collection/session"'
-login_file = Path(user.pw_dir) / ".local/share/keyrings/login.keyring"
+xdg_file = Path(user.pw_dir) / ".local/share/keyrings/login.keyring"
+legacy_file = Path(user.pw_dir) / ".gnome2/keyrings/login.keyring"
 
 def fake(owner, locked, collections=(LOGIN, SESSION), login_file_exists=False, failure=None):
+    # login_file_exists: whether any of the two login keyring files exists
     calls = []
 
     def run(command, **options):
@@ -344,7 +346,8 @@ def fake(owner, locked, collections=(LOGIN, SESSION), login_file_exists=False, f
         if failure:
             raise failure
         if "/usr/bin/test" in command:
-            assert command[-3:] == ["!", "-e", str(login_file)], command
+            assert command[command.index("/usr/bin/test") + 1:] == [
+                "!", "-e", str(xdg_file), "-a", "!", "-e", str(legacy_file)], command
             return subprocess.CompletedProcess(command, 1 if login_file_exists else 0)
         assert f"--address=unix:path={bus}" in command, command
         if "NameHasOwner" in command:
@@ -365,12 +368,28 @@ assert unlocked(user.pw_name, run, runtime) and len(calls) == 3, "an unlocked lo
 run, calls = fake("true", "true")
 assert not unlocked(user.pw_name, run, runtime), "a locked login collection"
 run, calls = fake("true", "true", collections=(DEFAULT, SESSION))
-assert unlocked(user.pw_name, run, runtime) and len(calls) == 2, "omacom/omarchy's keyring has no login collection to unlock"
+assert unlocked(user.pw_name, run, runtime) and len(calls) == 3, "omacom/omarchy's keyring has no login collection to unlock"
+run, calls = fake("true", "true", collections=(DEFAULT, SESSION), login_file_exists=True)
+assert not unlocked(user.pw_name, run, runtime), "a running keyring that omits a login keyring file on disk is not taken as empty"
+run, calls = fake("true", "false", collections=(DEFAULT, SESSION), failure=OSError("setpriv"))
+assert not unlocked(user.pw_name, run, runtime), "an unverifiable disk check refuses"
 run, calls = fake("false", "true")
 assert unlocked(user.pw_name, run, runtime) and len(calls) == 2, "a stopped keyring without a login keyring file"
 assert not any("Locked" in call or "Collections" in call for call in calls), "a stopped keyring is never queried"
 run, calls = fake("false", "false", login_file_exists=True)
 assert not unlocked(user.pw_name, run, runtime), "a stopped keyring with a login keyring would start locked"
+
+def present_only(path):
+    # The fake test command answers for the two real paths: only `path` exists.
+    def run(command, **options):
+        if "/usr/bin/test" in command:
+            tail = command[command.index("/usr/bin/test") + 1:]
+            exists = [str(xdg_file), str(legacy_file)][1 if path == "legacy" else 0]
+            return subprocess.CompletedProcess(command, 1 if exists in tail else 0)
+        return subprocess.CompletedProcess(command, 0, "b false\n", "")
+    return run
+assert not unlocked(user.pw_name, present_only("legacy"), runtime), "a legacy login keyring is not missed"
+assert not unlocked(user.pw_name, present_only("xdg"), runtime), "an XDG login keyring is not missed"
 run, calls = fake("true", "false", failure=subprocess.TimeoutExpired("busctl", 5))
 assert not unlocked(user.pw_name, run, runtime)
 run, calls = fake("false", "false", failure=OSError("setpriv"))
