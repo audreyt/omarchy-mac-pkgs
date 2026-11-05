@@ -37,7 +37,7 @@ This is what the first release is qualified against on both reference Macs. <spa
 | Apple GPU | <span class="status ok">works</span> | Mesa `vulkan-asahi`, hardware acceleration. A desktop on `llvmpipe` means something is wrong. |
 | Internal display, brightness | <span class="status ok">works</span> | The panel includes the strip beside the notch |
 | Keyboard, backlight, trackpad | <span class="status ok">works</span> | Drivers loaded early, so they work at the passphrase prompt. The backlight follows the ambient light sensor. See [Keyboard and trackpad]({{page:keyboard}}). |
-| Wi-Fi, Bluetooth | <span class="status ok">works</span> | NetworkManager with the iwd backend. Wi-Fi on BCM4378 and BCM4387 chips recovers after resume. Wi-Fi 6E Macs join on 2.4 and 5 GHz: a 6 GHz join passes no traffic with the current firmware. |
+| Wi-Fi, Bluetooth | <span class="status ok">works</span> | NetworkManager with the iwd backend. Wi-Fi on BCM4378 and BCM4387 chips recovers after resume. Wi-Fi 6E Macs join on 2.4 and 5 GHz: a 6 GHz join passes no traffic with the current firmware. On the MacBook Neo's MT7932, NetworkManager rather than iwd reconnects, so a connect the firmware rejects is retried. |
 | Speakers, microphone, headphones | <span class="status ok">works</span> | Asahi's DSP chain with `speakersafetyd` protecting the speakers. The microphone array is mapped, and a headset microphone takes priority when plugged in. If the microphone is still missing 30 s after the session starts, or when an update changes its DSP chain, one restart of the audio session is attempted to bring it back without a reboot. |
 | Suspend and resume | <span class="status ok">works</span> | Open the lid or press the power button to wake the Mac. A key press or trackpad click does not wake it: the kernel drivers for the built-in keyboard and trackpad do not register as a wakeup source on M1 or M2 MacBooks. Closed in a bag, it stays asleep. |
 | Battery, lid, power profiles | <span class="status ok">works</span> | |
@@ -61,15 +61,20 @@ Everything below the desktop is the Asahi Linux project's work, and the authorit
 
 ### M3 MacBook Air (edge testers)
 
-M3 Macs are not part of the first release. On an M3 MacBook Air installed from an edge image, the native display needs the line `chosen.asahi,t8122-dcp=1` in `/etc/m1n1.conf`, and a fresh install writes it when its `m1n1-aurora` is 1.6.1.aurora20-4 or newer. An M3 Air installed before that keeps its old boot setup. Once `pacman -Q m1n1-aurora` reports 1.6.1.aurora20-4 or newer, add the line yourself, unless `/etc/m1n1.conf` already has one, and rebuild m1n1's boot image, then reboot:
+M3 Macs are not part of the first release. On an M3 MacBook Air, 13-inch or 15-inch, m1n1 hands the built-in display and the GPU to Linux on every boot, as on M1 and M2 Macs, once `pacman -Q m1n1-aurora` reports 1.6.1.aurora21-1 or newer. Nothing in `/etc/m1n1.conf` is needed for that: m1n1 applies these defaults itself.
 
-```bash
-grep -Eq '^[[:space:]]*chosen\.asahi,t8122-dcp=' /etc/m1n1.conf 2>/dev/null ||
-  printf '\nchosen.asahi,t8122-dcp=1\n' | sudo tee -a /etc/m1n1.conf
-sudo update-m1n1
+```
+chosen.asahi,t8122-dcp=1
+chosen.asahi,t8122-gpu=1
+chosen.asahi,t8122-gpu-power-standin=1
+chosen.asahi,t8122-gpu-fuse-leakage=1
 ```
 
-USB-C and DisplayPort external displays stay off on an M3 Air for now, since the line hands over only the built-in one. With an older `m1n1-aurora`, 1.6.1.aurora20-3 included, the line black-screens the Mac at boot. If that happens, remove it from `/etc/m1n1.conf` and run `sudo update-m1n1` again from a shell on this install that doesn't need the display, such as SSH if you set it up beforehand.
+The first line is the display, and the others start the GPU with its power settings. m1n1 starts the GPU only on the macOS GPU firmware it knows, and leaves it off otherwise. Hardware graphics also need the Aurora kernel and Mesa that use it: until both are installed the desktop renders in software, which is slow. An M3 Pro MacBook Pro, 14-inch or 16-inch, gets its built-in display and GPU the same way, from the defaults `chosen.asahi,t6030-dcp=1` and `chosen.asahi,t6030-gpu=1`.
+
+To keep the GPU off, add `chosen.asahi,t8122-gpu=0` to `/etc/m1n1.conf` (`chosen.asahi,t6030-gpu=0` on an M3 Pro); to keep the display with m1n1 too, add `chosen.asahi,t8122-dcp=0` (`chosen.asahi,t6030-dcp=0`). `chosen.asahi,m3-defaults=0` turns all of these defaults off. Then run `sudo update-m1n1` and reboot. Omarchy never changes a line you set. With an older `m1n1-aurora`, 1.6.1.aurora20-4 or newer, Omarchy still adds the four lines above to `/etc/m1n1.conf` at install and at the first update that finds them missing, and adds no GPU lines while the display line is 0 or any `chosen.asahi,t8122-gpu` line of your own is there. Once `m1n1-aurora` 1.6.1.aurora21-1 is installed it removes the lines it added, and keeps any you wrote.
+
+USB-C and DisplayPort external displays stay off on an M3 Air for now, since the display handoff covers only the built-in one. With an older `m1n1-aurora`, 1.6.1.aurora20-3 included, the display line black-screens the Mac at boot. If that happens, remove it from `/etc/m1n1.conf` and run `sudo update-m1n1` again from a shell on this install that doesn't need the display, such as SSH if you set it up beforehand.
 
 Anything marked work in progress there, Thunderbolt device support among them, is work in progress here too. The Aurora kernel adds the display, camera and USB4 work described above.
 

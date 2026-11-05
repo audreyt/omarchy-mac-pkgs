@@ -216,7 +216,7 @@ done
 rm "$fixture/keybag"
 [[ -z $(run touchid-eligibility keybag) ]] || fail 'with no record there is nothing to say'
 : >"$fixture/keybag"
-[[ $(run touchid-eligibility keybag) == "present" ]] || fail 'a file the driver did not write as a record is still a key store' 
+[[ $(run touchid-eligibility keybag) == "present" ]] || fail 'a file the driver did not write as a record is still a key store'
 printf 'APPLE-SEP-KBAG01' >"$fixture/keybag"
 [[ $(eligibility) == "available" ]] || fail 'a record too short to have a state is no unfinished creation'
 pass 'only a Mac whose setup can finish is available'
@@ -591,7 +591,7 @@ pass 'turning Touch ID on carves what is missing, records the agreement, and suc
 entry=$work/entry
 mkdir -p "$entry"
 for name in enable-fingerprint disable-fingerprint; do
-  sed -e "s|/run/omarchy-mac/touchid|$fixture/run/touchid|g" -e "s|/var/lib/aurora-sep-keybag.bin|$fixture/keybag|g" \
+  sed -e "s|/run/omarchy-mac/touchid|$fixture/run/touchid|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-enable|$fixture/bin/enable-stub|g" -e "s|/etc/omarchy-mac/touchid-on|$fixture/etc/touchid-on|g" \
     -e "s|/usr/lib/omarchy-mac/touchid-eligibility|$fixture/bin/eligibility-stub|g" \
     -e "s|/etc/modprobe.d/omarchy-mac-touchid.conf|$fixture/etc/modprobe.conf|g" -e "s|/usr/lib/firmware/updates/|$fixture/firmware/updates/|g" \
@@ -614,27 +614,21 @@ machine apple,j414c apple,t6021 apple,arm-platform
 ! ask available '' && [[ ! -s $fixture/calls ]] || fail 'no answer is no'
 ! PATH="$fixture/bin:$PATH" "$entry/enable-fingerprint" </dev/null >"$fixture/out" 2>&1 && [[ ! -s $fixture/calls ]] ||
   fail 'a closed terminal is no'
-grep -q 'creates a key store' "$fixture/out" && grep -q 'anti-replay state' "$fixture/out" &&
-  grep -q 'both systems update it' "$fixture/out" && grep -q 'With FileVault on' "$fixture/out" &&
-  grep -q 'DFU' "$fixture/out" && grep -q 'With FileVault off' "$fixture/out" &&
-  grep -q 'up anything on macOS you still need' "$fixture/out" && grep -q 'The key store stays' "$fixture/out" ||
-  fail 'the owner is told about the shared state, the worst case for each FileVault setting and what stays' "$(<"$fixture/out")"
-! grep -qE "sensor's key|earlier Touch ID setup" "$fixture/out" ||
-  fail "a Mac that isn't a Neo, with no key store yet, is told nothing that applies only to others" "$(<"$fixture/out")"
+grep -q 'experimental and can be unstable' "$fixture/out" && grep -q 'Secure Enclave with macOS' "$fixture/out" &&
+  grep -q 'back up any data on your macOS partition' "$fixture/out" && grep -q "The Mac manual's" "$fixture/out" ||
+  fail 'the owner is told Touch ID is experimental, to back up macOS and where the details are' "$(<"$fixture/out")"
+(( $(grep -c . "$fixture/out") <= 4 )) || fail 'the prompt stays at three lines' "$(<"$fixture/out")"
 ask available y && grep -Fxq enable "$fixture/calls" || fail 'an owner who says yes turns Touch ID on'
 neo
-touch "$fixture/keybag"
-! ask available n && grep -q "reads the sensor's key from the factory records" "$fixture/out" &&
-  grep -q 'only root can' "$fixture/out" && grep -q 'Turning Touch ID off deletes that file' "$fixture/out" &&
-  grep -q 'earlier Touch ID setup created' "$fixture/out" && ! grep -q 'creates a key store' "$fixture/out" ||
-  fail 'a Neo with a key store is told what applies to it' "$(<"$fixture/out")"
-[[ -z $(key_copies) ]] || fail "a Neo whose owner says no has no copy of its sensor key" "$(key_copies)"
+! ask available n && [[ -z $(key_copies) ]] || fail "a Neo whose owner says no has no copy of its sensor key" "$(key_copies)"
 awk 'length > 80 { exit 1 }' "$fixture/out" || fail 'the prompt fits in 80 columns' "$(<"$fixture/out")"
-# A refused creation's record holds no key store, so one is created.
+# A refused creation is retryable and gets the same short prompt.
 machine apple,j414c apple,t6021 apple,arm-platform
 keybag_record 2 "$fixture/keybag"
-! ask available n && grep -q 'creates a key store' "$fixture/out" && ! grep -q 'earlier Touch ID setup created' "$fixture/out" ||
-  fail "a refused creation's record is not called an earlier key store" "$(<"$fixture/out")"
+! ask available n && grep -q 'experimental and can be unstable' "$fixture/out" &&
+  grep -q "The Mac manual's" "$fixture/out" && [[ ! -s $fixture/calls ]] &&
+  (( $(grep -c . "$fixture/out") <= 4 )) ||
+  fail "a refused creation's record keeps the short prompt and an owner's refusal loads nothing" "$(<"$fixture/out")"
 # An agreed Mac whose creation never finished is told why, not to restart.
 mkdir -p "$fixture/etc"
 touch "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
@@ -655,7 +649,7 @@ mkdir -p "$fixture/etc/modprobe.conf.new/in-the-way"
   fail "options that can't be written for an earlier agreement fail" "$(<"$fixture/out")"
 rm -rf "$fixture/etc/modprobe.conf.new"
 rm "$fixture/etc/touchid-on"
-! ask ready n && grep -q 'With FileVault on' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
+! ask ready n && grep -q 'experimental' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
   fail 'a Touch ID turned off earlier this boot asks again before turning back on'
 # Where Touch ID can't be set up, the setup goes on, so a USB reader enrols.
 ask failed '' && grep -q 'Restart this Mac' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
@@ -675,7 +669,7 @@ without_status() {
 }
 without_status none '' && [[ ! -s $fixture/out && ! -s $fixture/calls ]] ||
   fail 'a Mac with no sensor, which records no status, lets the setup go on and says nothing' "$(<"$fixture/out")"
-! without_status available n && grep -q 'With FileVault on' "$fixture/out" && grep -q 'Touch ID stays off' "$fixture/out" &&
+! without_status available n && grep -q 'experimental' "$fixture/out" && grep -q 'Touch ID stays off' "$fixture/out" &&
   [[ ! -s $fixture/calls ]] ||
   fail 'a status service that failed is worked out again, and an available Mac still asks' "$(<"$fixture/out")"
 without_status unsupported:m1-family '' && grep -q 'unsupported:m1-family' "$fixture/out" && [[ ! -s $fixture/calls ]] ||
@@ -689,7 +683,7 @@ ask blocked '' && grep -Fxq 'options apple_sep xart_writes=1 provision_keybag=1'
   fail 'an agreed Mac that reads blocked gets its options and is told to restart' "$(<"$fixture/out")"
 # An agreed Mac whose activation hasn't answered is never asked again, so a no
 # can't claim to leave on a Touch ID that is on.
-without_status available n && ! grep -qE 'With FileVault on|stays off' "$fixture/out" && grep -q "isn't ready yet (no status)" "$fixture/out" &&
+without_status available n && ! grep -qE 'experimental|stays off' "$fixture/out" && grep -q "isn't ready yet (no status)" "$fixture/out" &&
   [[ -e $fixture/etc/touchid-on && ! -s $fixture/calls ]] ||
   fail 'an agreed Mac with no status is told to restart, not asked again' "$(<"$fixture/out")"
 rm -f "$fixture/etc/touchid-on" "$fixture/etc/modprobe.conf"
@@ -719,10 +713,12 @@ flock "$held"
 ! ask ready '' && grep -q 'another Touch ID setup or removal is still running' "$fixture/out" && [[ ! -e $fixture/etc/modprobe.conf ]] ||
   fail "an agreed Mac's options wait for the lock" "$(<"$fixture/out")"
 exec {held}>&-
-rm "$fixture/etc/touchid-on"
 # A lock that can't be opened is said to be so, not taken for a setup running.
 rm -f "$fixture/run/touchid.lock"
 mkdir "$fixture/run/touchid.lock"
+! ask ready '' && grep -q 'could not be opened' "$fixture/out" && [[ ! -e $fixture/etc/modprobe.conf ]] ||
+  fail "an agreed Mac whose lock can't be opened says so" "$(<"$fixture/out")"
+rm "$fixture/etc/touchid-on"
 ! PATH="$fixture/bin:$PATH" "$entry/disable-fingerprint" >"$fixture/out" 2>&1 && grep -q 'could not be opened' "$fixture/out" ||
   fail "a removal whose lock can't be opened says so" "$(<"$fixture/out")"
 rmdir "$fixture/run/touchid.lock"
